@@ -1,0 +1,83 @@
+name: ci
+
+# Every platform this is meant to run on builds and tests it. The tree it serves is read from
+# whatever .NET the runner has, so the suite exercises a real installation on each.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build at zero warnings
+        run: dotnet build --no-restore -c Release -warnaserror
+
+      # The whole solution, so a test project added later is run without anyone remembering to
+      # name it here.
+      - name: Test
+        run: dotnet test --no-build -c Release
+
+      # One platform is enough for formatting: it reads the same files everywhere, and running it
+      # three times only spends time to reach the same answer.
+      - name: Format
+        if: matrix.os == 'ubuntu-latest'
+        run: dotnet format --verify-no-changes
+
+  publish:
+    name: publish smoke (${{ matrix.rid }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [linux-x64, osx-arm64, win-x64]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      # A release publishes a self-contained single file, which trips analyzers an ordinary build
+      # never reaches — IL3000 on Assembly.Location, for one. Finding that at tag time means
+      # finding it when it is most expensive, so every push proves the shape a release will use.
+      - name: Publish
+        run: >
+          dotnet publish src/TerminalFs -c Release -r ${{ matrix.rid }}
+          --self-contained true -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true -warnaserror
+          -o out/${{ matrix.rid }}
+
+      - name: The binary exists and is not empty
+        run: test -s "out/${{ matrix.rid }}/terminalfs" || test -s "out/${{ matrix.rid }}/terminalfs.exe"

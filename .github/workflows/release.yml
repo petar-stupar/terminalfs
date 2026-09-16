@@ -1,0 +1,195 @@
+name: release
+
+# A release starts from a tag, never from a push to main: the artifacts carry a version, and a
+# version has to be decided by a person.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The v* tag to release (it must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CI: "true"
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+
+jobs:
+  check:
+    name: the tag is the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - id: version
+        shell: bash
+        # The tag reaches the script through the environment, not through string substitution:
+        # an expression expanded into a run block is expanded before any shell sees it, so its
+        # contents would be script rather than data. Only maintainers can dispatch this, which
+        # bounds it; env costs nothing.
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+          version="$(sed -n 's/.*<Version>\([^<]*\)<\/Version>.*/\1/p' Directory.Build.props | head -1)"
+
+          test -n "$version" || { echo "Directory.Build.props has no <Version>"; exit 1; }
+
+          if [ "$tag" != "v$version" ]; then
+            echo "tag $tag does not name the version $version in Directory.Build.props"
+            exit 1
+          fi
+
+          if ! grep -Eq "^## \[$version\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [$version]' section; the release notes come from it"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: the suite passes on ${{ matrix.os }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Build at zero warnings
+        run: dotnet build -c Release -warnaserror
+
+      # ci.yml runs on every push; this runs again on the tag, because a tag can name a commit
+      # that never went through a pull request and the artifacts below are what people install.
+      - name: Test
+        run: dotnet test --no-build -c Release
+
+  build:
+    name: ${{ matrix.rid }}
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every target is built here. A self-contained publish copies a runtime and patches an
+        # apphost; it compiles nothing native, so it cross-builds from one runner and the six
+        # artifacts come from one checkout of one commit.
+        rid: [linux-x64, linux-arm64, osx-x64, osx-arm64, win-x64, win-arm64]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Publish
+        run: >
+          dotnet publish src/TerminalFs -c Release -r ${{ matrix.rid }}
+          --self-contained true -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true -warnaserror
+          -o out
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          name="terminalfs-$version-$RID"
+          mkdir -p dist
+
+          # The debugging symbols are not part of what a user installs.
+          rm -f out/*.pdb
+
+          case "$RID" in
+            win-*)
+              (cd out && zip -q -r "../dist/$name.zip" .)
+              ;;
+            *)
+              chmod +x out/terminalfs
+              tar -czf "dist/$name.tar.gz" -C out .
+              ;;
+          esac
+
+      - name: Keep the artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.rid }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish the release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Collect every artifact
+        uses: actions/download-artifact@v8
+        with:
+          path: staged
+
+      - name: Collect and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find staged -type f -exec mv {} dist/ \;
+          # Named explicitly so the sums file can never list itself.
+          (cd dist && sha256sum terminalfs-* > SHA256SUMS)
+          ls -la dist
+
+      - name: The section of the changelog that names this version
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > NOTES.md
+          test -s NOTES.md || { echo "the changelog section is empty"; exit 1; }
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release create "$TAG" --title "$TAG" --notes-file NOTES.md dist/*

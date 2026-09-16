@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TerminalFs.Core/TerminalFs.Core.csproj" />
+    <Project Path="src/TerminalFs/TerminalFs.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TerminalFs.Core.Tests/TerminalFs.Core.Tests.csproj" />
+    <Project Path="tests/TerminalFs.Tests/TerminalFs.Tests.csproj" />
+  </Folder>
+</Solution>

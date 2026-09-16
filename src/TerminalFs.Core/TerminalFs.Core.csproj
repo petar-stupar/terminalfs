@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>TerminalFs.Core</RootNamespace>
+  </PropertyGroup>
+
+  <!-- No 9P here. This project knows about commands, their output and the rules that refuse
+       them; the fid, the qid and the wire are the exe's business. The split is what lets the
+       whole protocol be tested without a socket. -->
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="TerminalFs.Core.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,20 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-Recommended</AnalysisLevel>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- This tree runs commands. Everything a client writes to /ctl is executed by a shell with
+       this process's user, environment and working directory, so the address the server binds
+       and the deny list it loads are the whole of the access control. Nothing in the build
+       enforces that; the refusal to serve off loopback is in CliOptions.Validated. -->
+
+</Project>

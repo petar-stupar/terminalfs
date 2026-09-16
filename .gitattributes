@@ -1,0 +1,3 @@
+# Every text file checks out with LF on every platform. scripts/install.sh is run by /bin/sh, and
+# a CRLF in it is a syntax error on the machine that pipes it into a shell.
+* text=auto eol=lf
