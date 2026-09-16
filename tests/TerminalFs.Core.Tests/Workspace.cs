@@ -58,6 +58,20 @@ internal sealed class Workspace : IDisposable
         ? $"ping -n {seconds + 1} 127.0.0.1 >NUL"
         : $"sleep {seconds}";
 
+    /// <summary>
+    /// Runs several commands one after another, in whichever shell this is.
+    /// </summary>
+    /// <remarks>
+    /// The separator is not the same everywhere, and the difference is silent rather than loud.
+    /// <c>;</c> separates for a POSIX shell and means nothing to <c>cmd</c>, which reads
+    /// <c>echo out; echo err 1&gt;&amp;2</c> as one <c>echo</c> of the whole line — so the test
+    /// that wanted a line on each stream got both on one and neither where it looked. <c>&amp;</c>
+    /// separates for cmd and backgrounds for a POSIX shell, so neither spelling is portable and
+    /// the choice has to be made here.
+    /// </remarks>
+    internal static string Then(params string[] commands) =>
+        string.Join(OperatingSystem.IsWindows() ? " & " : "; ", commands);
+
     public void Dispose()
     {
         Registry.Dispose();

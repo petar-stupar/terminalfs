@@ -23,7 +23,7 @@ public sealed class CommandTests : IDisposable
     [Fact]
     public async Task StandardErrorIsCapturedSeparately()
     {
-        Command command = workspace.Run("t1", "echo out; echo err 1>&2");
+        Command command = workspace.Run("t1", Workspace.Then("echo out", "echo err 1>&2"));
 
         await Workspace.Finished(command);
 
