@@ -8,6 +8,8 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-09-16
+
 ### Added
 
 - **Shell commands as a filesystem.** `echo '<command>' > /ctl/<name>` runs it, and
@@ -50,4 +52,5 @@ refuses a tag whose version has no section here.
 - **`--listen` off loopback is refused, with no flag to override it.** This server runs whatever is
   written to a control file, as the user who started it; whoever can open the socket gets a shell.
 
-[Unreleased]: https://github.com/petar-stupar/terminalfs/commits/main
+[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/petar-stupar/terminalfs/releases/tag/v0.1.0
