@@ -23,18 +23,8 @@ public sealed class CommandRegistry : IDisposable
     /// </summary>
     private const int RememberedRemovals = 64;
 
-    /// <summary>
-    /// How many recent refusals the control file reports.
-    /// </summary>
-    /// <remarks>
-    /// Enough for a caller to find their own among a few others, few enough that the control
-    /// file stays something you can read at a glance.
-    /// </remarks>
-    private const int RememberedRefusals = 8;
-
     private readonly ConcurrentDictionary<string, Command> commands = new(StringComparer.Ordinal);
     private readonly Queue<string> recentlyRetired = new();
-    private readonly Queue<(DateTimeOffset When, string Reason)> refusals = new();
     private readonly Lock gate = new();
     private readonly CommandOptions options;
 
@@ -65,13 +55,6 @@ public sealed class CommandRegistry : IDisposable
                     () => Revision,
                     () => ChangedAt),
                 new ControlDirectory(this, builtAt),
-                new LivePage(
-                    "refused",
-                    TerminalNodeKind.Field,
-                    "/refused",
-                    () => TreeText.Refused(this),
-                    () => Revision,
-                    () => ChangedAt),
                 new CommandsDirectory(this, options.WaitTimeout),
                 Skills.Directory(builtAt),
             ]);
@@ -194,20 +177,36 @@ public sealed class CommandRegistry : IDisposable
 
         if (text.Trim().Length == 0)
         {
-            command.MarkFailed("no command text was written before the control file was closed");
-            Touch();
+            Deny(command, text, "no command text was written before the control file was closed");
             return;
         }
 
         if (options.Deny.Match(text) is { } rule)
         {
-            command.MarkFailed(Refusal(rule));
-            Touch();
+            Deny(command, text, Refusal(rule));
             return;
         }
 
         ProcessSupervisor.Spawn(command, text, Shell, WorkingDirectory, options.TimeProvider);
         Touch();
+    }
+
+    /// <summary>
+    /// Records a command refused before it ran. It keeps its name and its directory.
+    /// </summary>
+    /// <remarks>
+    /// The reason has to be somewhere a caller can go and read it. A refusal travels as a sentence
+    /// and a number, but 9P2000.L — which is what a Linux mount and the SMB bridge both speak —
+    /// carries only the number, so every sentence reaches a mounted caller as "Operation not
+    /// permitted" and nothing else. Putting it on the command names it: the three files in that
+    /// directory are the whole of the answer, and nothing else could be true of one that never ran.
+    /// </remarks>
+    internal void Deny(Command command, string text, string reason)
+    {
+        if (command.MarkDenied(text, reason))
+        {
+            Touch();
+        }
     }
 
     /// <summary>Ends a running command.</summary>
@@ -308,44 +307,6 @@ public sealed class CommandRegistry : IDisposable
     /// </summary>
     /// <exception cref="CommandException">The id is not usable, or is already taken.</exception>
     public ControlSession OpenControl(string id) => new(this, Reserve(id), options.MaxControlBytes);
-
-    /// <summary>
-    /// Records a refusal so that a caller can find out what it was.
-    /// </summary>
-    /// <remarks>
-    /// This exists because of what the protocol can carry. A refusal travels as a sentence and a
-    /// number, but 9P2000.L — which is what a Linux mount and the SMB bridge both speak — carries
-    /// only the number: every sentence here reaches a mounted caller as "Invalid argument" or
-    /// "Operation not permitted" and nothing else. Since the reason cannot come back through the
-    /// write, it is put where a caller can go and look for it, which is the file they were
-    /// writing to.
-    /// </remarks>
-    public void Refused(string reason)
-    {
-        lock (gate)
-        {
-            refusals.Enqueue((options.TimeProvider.GetUtcNow(), reason));
-
-            while (refusals.Count > RememberedRefusals)
-            {
-                refusals.Dequeue();
-            }
-
-            revision++;
-        }
-    }
-
-    /// <summary>The refusals a caller may still be looking for the reason behind, newest last.</summary>
-    public IReadOnlyList<(DateTimeOffset When, string Reason)> Refusals
-    {
-        get
-        {
-            lock (gate)
-            {
-                return [.. refusals];
-            }
-        }
-    }
 
     /// <summary>Ends every command and takes the output directory with it.</summary>
     public void Dispose()

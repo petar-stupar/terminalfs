@@ -86,6 +86,7 @@ internal sealed class CommandDirectory : TerminalDirectory
             "pid" => () => command.Pid is { } pid
                 ? pid.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n"
                 : string.Empty,
+            "reason" => () => command.Reason is { } why ? why + "\n" : string.Empty,
             "exitcode" => () => command.ExitCode is { } code
                 ? code.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n"
                 : string.Empty,

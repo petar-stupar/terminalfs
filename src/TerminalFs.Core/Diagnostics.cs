@@ -5,8 +5,9 @@ namespace TerminalFs.Core;
 /// </summary>
 /// <remarks>
 /// These are the failures with nowhere else to go. A command refused at <c>/ctl</c> travels back
-/// to the caller as a <see cref="CommandException"/>, and a command that fails while running says
-/// so in its own <c>status</c> and <c>stderr</c>. A settings file that stopped parsing halfway
+/// to the caller as a <see cref="CommandException"/> and says so again in its own <c>status</c>
+/// and <c>reason</c>, and a command that fails while running says so in its <c>status</c> and
+/// <c>stderr</c>. A settings file that stopped parsing halfway
 /// through a session has neither channel: the rules that are still in force are the ones loaded
 /// before the edit, and nobody asked a question this could be the answer to.
 /// </remarks>

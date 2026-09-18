@@ -51,14 +51,6 @@ public sealed class RenderTests : IDisposable
                 continue;
             }
 
-            // /refused is not a document. It is read by someone whose write has just failed and
-            // who has been told only a number; six lines of frontmatter above the answer would
-            // be in the way of the one thing they came for.
-            if (string.Equals(node.Name, "refused", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
             string text = await Text(node);
 
             Assert.StartsWith("---\ntype: ", text, StringComparison.Ordinal);
@@ -134,22 +126,6 @@ public sealed class RenderTests : IDisposable
         string text = await Text(commands.Find("index.md")!);
 
         Assert.Contains("`echo one …`", text, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// The refusals a caller can still go and look up. This is the whole of the reason channel on
-    /// a mount, because the dialect one speaks carries an error number and no sentence.
-    /// </summary>
-    [Fact]
-    public async Task RefusalsAreReadableWithTheirReasons()
-    {
-        Assert.Equal("Nothing has been refused.\n", await Text(Registry.Root.Find("refused")!));
-
-        Registry.Refused("'t1' is already a command");
-
-        string refused = await Text(Registry.Root.Find("refused")!);
-
-        Assert.Contains("'t1' is already a command", refused, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -248,6 +224,33 @@ public sealed class RenderTests : IDisposable
         Assert.Equal("echo hello\n", await Text(directory.Find("command")!));
         Assert.Equal("completed\n", await Text(directory.Find("status")!));
         Assert.Equal("0\n", await Text(directory.Find("exitcode")!));
+    }
+
+    /// <summary>
+    /// The three files a refused command leaves, as a caller reads them. This is the whole of the
+    /// reason channel on a mount, because the dialect one speaks carries a number and no sentence.
+    /// </summary>
+    [Fact]
+    public async Task ADeniedCommandDirectoryHoldsOnlyWhatWasAskedWhatHappenedAndWhy()
+    {
+        // Refused for its shape rather than by a rule, so this needs no settings file.
+        Registry.OpenControl("t1").Close();
+
+        var commands = (TerminalDirectory)Registry.Root.Find("cmd")!;
+        var directory = (TerminalDirectory)commands.Find("t1")!;
+
+        Assert.Equal(
+            ["command", "status", "reason"],
+            directory.Children.Select(child => child.Name));
+
+        Assert.Equal("denied\n", await Text(directory.Find("status")!));
+        Assert.Contains("no command text", await Text(directory.Find("reason")!), StringComparison.Ordinal);
+        Assert.EndsWith("\n", await Text(directory.Find("reason")!), StringComparison.Ordinal);
+
+        foreach (string absent in new[] { "pid", "exitcode", "stdout", "stderr", "wait", "kill" })
+        {
+            Assert.Null(directory.Find(absent));
+        }
     }
 
     [Fact]

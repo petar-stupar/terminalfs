@@ -149,27 +149,6 @@ public sealed class EndToEndTests
         Assert.Equal(Errno.ENOENT, refused.Error.Errno);
     }
 
-    /// <summary>
-    /// The number is all a mount gets. 9P2000.L carries no sentence with an error, so a caller
-    /// whose write failed has been told "Invalid argument" and nothing else — and the reason has
-    /// to be somewhere they can go and read it. The file they were writing to is that place.
-    /// </summary>
-    [Fact]
-    public async Task TheReasonForARefusalIsReadableFromRefused()
-    {
-        await using Served served = await Served.StartAsync();
-        await using NinePSession session = await served.ConnectAsync();
-
-        await RunAsync(session, "t1", "echo one");
-
-        await Assert.ThrowsAsync<NinePException>(
-            async () => await RunAsync(session, "t1", "echo two"));
-
-        string refused = await ReadAsync(session, "/refused");
-
-        Assert.Contains("t1: 't1' is already a command", refused, StringComparison.Ordinal);
-    }
-
     [Fact]
     /// <summary>
     /// A name already taken is refused as <c>EEXIST</c>, not as "no such file". Answering the
@@ -199,11 +178,68 @@ public sealed class EndToEndTests
             async () => await RunAsync(session, "t1", "sudo ls"));
 
         Assert.Equal(Errno.EPERM, refused.Error.Errno);
-        Assert.Null(served.Registry.Find("t1"));
+        Assert.Equal(CommandState.Denied, served.Registry.Find("t1")!.State);
+    }
 
-        // The rule that refused it is named where a mounted caller can read it, since the
-        // dialect a mount speaks carries no sentence with the error.
-        Assert.Contains("Bash(sudo:*)", await ReadAsync(session, "/refused"), StringComparison.Ordinal);
+    /// <summary>
+    /// The number is all a mount gets: 9P2000.L carries no sentence with an error, so a caller
+    /// whose write failed has been told "Operation not permitted" and nothing else. The reason
+    /// has to be somewhere they can walk to, and the command they named is that place — three
+    /// files, because nothing ran and there is nothing else to say.
+    /// </summary>
+    [Fact]
+    public async Task ADeniedCommandIsADirectoryHoldingWhatWasAskedStatusAndWhy()
+    {
+        await using Served served = await Served.StartAsync(deny: ["Bash(sudo:*)"]);
+        await using NinePSession session = await served.ConnectAsync();
+
+        await Assert.ThrowsAsync<NinePException>(
+            async () => await RunAsync(session, "t1", "sudo ls"));
+
+        string[] files = [.. (await session.ReadDirAsync("/cmd/t1", Token)).Select(entry => entry.Name)];
+
+        Assert.Equal(["command", "status", "reason"], files);
+
+        Assert.Equal("denied", (await ReadAsync(session, "/cmd/t1/status")).Trim());
+        Assert.Equal("sudo ls", (await ReadAsync(session, "/cmd/t1/command")).Trim());
+        Assert.Contains(
+            "Bash(sudo:*)", await ReadAsync(session, "/cmd/t1/reason"), StringComparison.Ordinal);
+
+        // Absent rather than empty. An empty stdout would promise output that can never arrive.
+        NinePException missing = await Assert.ThrowsAsync<NinePException>(
+            async () => await ReadAsync(session, "/cmd/t1/stdout"));
+
+        Assert.Equal(Errno.ENOENT, missing.Error.Errno);
+    }
+
+    /// <summary>
+    /// A name runs once, and a refused command spent its name like any other. This is the whole
+    /// of the recovery: remove the directory, or — quicker — write to a different name.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedNameStaysTakenUntilItsDirectoryIsRemoved()
+    {
+        await using Served served = await Served.StartAsync(deny: ["Bash(sudo:*)"]);
+        await using NinePSession session = await served.ConnectAsync();
+
+        await Assert.ThrowsAsync<NinePException>(
+            async () => await RunAsync(session, "t1", "sudo ls"));
+
+        NinePException taken = await Assert.ThrowsAsync<NinePException>(
+            async () => await RunAsync(session, "t1", "echo ok"));
+
+        Assert.Equal(Errno.EEXIST, taken.Error.Errno);
+
+        foreach (string file in new[] { "command", "status", "reason" })
+        {
+            await session.RemoveAsync("/cmd/t1/" + file, Token);
+        }
+
+        await session.RemoveAsync("/cmd/t1", Token);
+
+        await RunAsync(session, "t1", "echo ok");
+
+        Assert.Equal("completed", (await ReadAsync(session, "/cmd/t1/wait")).Trim());
     }
 
     [Fact]
@@ -386,7 +422,7 @@ public sealed class EndToEndTests
 
         string[] top = [.. (await session.ReadDirAsync("/", Token)).Select(entry => entry.Name)];
 
-        Assert.Equal(["index.md", "ctl", "refused", "cmd", "skills"], top);
+        Assert.Equal(["index.md", "ctl", "cmd", "skills"], top);
 
         Assert.Contains("Commands, as files", await ReadAsync(session, "/index.md"), StringComparison.Ordinal);
         Assert.Contains("name: terminalfs", await ReadAsync(session, "/skills/terminalfs/SKILL.md"), StringComparison.Ordinal);

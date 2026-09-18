@@ -56,8 +56,9 @@ internal sealed class ControlChannel(ControlSession session) : IOpenFile
     /// </summary>
     /// <remarks>
     /// 9P has no error on a clunk that a write's caller would see, so a command that cannot start
-    /// is not refused here: it is recorded as an error on the command itself, with the reason on
-    /// its <c>stderr</c>, where a caller is already going to look.
+    /// is not refused here: it is recorded on the command itself. One the rules would not allow is
+    /// denied, with the reason in its <c>reason</c> file; one whose shell would not start is an
+    /// error, with the reason on its <c>stderr</c>.
     /// </remarks>
     public ValueTask DisposeAsync()
     {

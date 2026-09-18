@@ -13,9 +13,15 @@ public enum CommandState
     Completed,
 
     /// <summary>
-    /// It did not. A non-zero exit, a kill, a shell that could not be started, or a command
-    /// refused before it ran all end here: to a caller they are the same news, and the reason is
-    /// on <c>stderr</c>.
+    /// It did not. A non-zero exit, a kill, or a shell that could not be started all end here: to
+    /// a caller they are the same news, and the reason is on <c>stderr</c>.
     /// </summary>
     Error,
+
+    /// <summary>
+    /// It was refused before it ran, so there is no process, no exit code and no output. Its
+    /// directory holds <c>command</c>, <c>status</c> and <c>reason</c>, and nothing else: every
+    /// other file would be describing a process that does not exist.
+    /// </summary>
+    Denied,
 }

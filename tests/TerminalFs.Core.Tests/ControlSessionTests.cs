@@ -127,19 +127,29 @@ public sealed class ControlSessionTests : IDisposable
             () => Write(session, new string('x', 200)));
 
         Assert.Equal(CommandErrno.TooLarge, refused.Errno);
+
+        Command command = small.Registry.Find("t1")!;
+
+        Assert.Equal(CommandState.Denied, command.State);
+        Assert.Contains("64 bytes", command.Reason!, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Nothing ran, so it is denied like any other command that never started — and the reason is
+    /// in <c>reason</c> rather than on a <c>stderr</c> that no process ever wrote to.
+    /// </summary>
     [Fact]
-    public async Task CloseWithoutABodyMarksTheCommandFailed()
+    public void CloseWithoutABodyDeniesTheCommand()
     {
         ControlSession session = Registry.OpenControl("t1");
         session.Close();
 
         Command command = Registry.Find("t1")!;
-        await Finished(command);
 
-        Assert.Equal(CommandState.Error, command.State);
-        Assert.Contains("no command text", Workspace.Read(command.Stderr), StringComparison.Ordinal);
+        Assert.Equal(CommandState.Denied, command.State);
+        Assert.Contains("no command text", command.Reason!, StringComparison.Ordinal);
+        Assert.Equal(["command", "status", "reason"], command.VisibleChildren);
+        Assert.Equal(string.Empty, Workspace.Read(command.Stderr));
     }
 
     [Fact]
@@ -154,9 +164,12 @@ public sealed class ControlSessionTests : IDisposable
         Assert.Contains("Bash(sudo:*)", refused.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>The name is given back, because nothing ran under it.</summary>
+    /// <summary>
+    /// The name is spent, because the reason has to live somewhere and that somewhere is the
+    /// directory the name owns. Removing it is what frees the name again.
+    /// </summary>
     [Fact]
-    public void ADeniedCommandLeavesItsNameFree()
+    public void ADeniedCommandKeepsItsNameAndItsDirectory()
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
 
@@ -165,11 +178,61 @@ public sealed class ControlSessionTests : IDisposable
             Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
         }
 
-        Assert.Null(denied.Registry.Find("t1"));
+        Assert.Equal(CommandState.Denied, denied.Registry.Find("t1")!.State);
+
+        CommandException taken = Assert.Throws<CommandException>(
+            () => denied.Registry.OpenControl("t1"));
+
+        Assert.Equal(CommandErrno.Exists, taken.Errno);
+
+        denied.Registry.RemoveTree("t1");
 
         using ControlSession again = denied.Registry.OpenControl("t1");
 
         Assert.NotNull(denied.Registry.Find("t1"));
+    }
+
+    /// <summary>
+    /// The text that was refused is what <c>command</c> reports, so a caller can see what the
+    /// rule matched against rather than having to remember what they wrote.
+    /// </summary>
+    [Fact]
+    public void ADeniedCommandKeepsWhatWasWrittenInItsCommandFile()
+    {
+        using var denied = new DeniedWorkspace("Bash(sudo:*)");
+
+        using (ControlSession session = denied.Registry.OpenControl("t1"))
+        {
+            Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
+        }
+
+        Command command = denied.Registry.Find("t1")!;
+
+        Assert.Equal("sudo ls", command.Text);
+        Assert.Contains("Bash(sudo:*)", command.Reason!, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Nothing ran, so every file that would describe a process is absent rather than empty: an
+    /// empty <c>stdout</c> would promise output that can never arrive.
+    /// </summary>
+    [Fact]
+    public void ADeniedCommandHasOnlyItsCommandStatusAndReason()
+    {
+        using var denied = new DeniedWorkspace("Bash(sudo:*)");
+
+        using (ControlSession session = denied.Registry.OpenControl("t1"))
+        {
+            Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
+        }
+
+        Command command = denied.Registry.Find("t1")!;
+
+        Assert.Equal(["command", "status", "reason"], command.VisibleChildren);
+        Assert.Null(command.ExitCode);
+        Assert.Null(command.Pid);
+        Assert.Equal(string.Empty, Workspace.Read(command.Stderr));
+        Assert.Equal("denied\n", command.StatusLine);
     }
 
     /// <summary>
@@ -188,7 +251,12 @@ public sealed class ControlSessionTests : IDisposable
             Assert.Throws<CommandException>(() => Write(session, " && sudo ls"));
         }
 
-        Assert.Null(denied.Registry.Find("t1"));
+        Command command = denied.Registry.Find("t1")!;
+
+        Assert.Equal(CommandState.Denied, command.State);
+
+        // The whole of what was written, not just the write that tripped the rule.
+        Assert.Equal("cd /tmp && sudo ls", command.Text);
     }
 
     [Fact]
@@ -205,7 +273,7 @@ public sealed class ControlSessionTests : IDisposable
     /// <summary>
     /// A mount retries a write that failed. Answering the second attempt with something about the
     /// state this session is now in would describe the machinery rather than the mistake, and
-    /// would put an entry in the refusal log that nobody caused.
+    /// marking the command a second time would overwrite the reason it was refused for.
     /// </summary>
     [Fact]
     public void ARetriedWriteIsRefusedWithTheSameReason()
@@ -217,7 +285,30 @@ public sealed class ControlSessionTests : IDisposable
         CommandException again = Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
 
         Assert.Equal(first.Message, again.Message);
-        Assert.Single(denied.Registry.Refusals);
+        Assert.Equal(first.Message, denied.Registry.Find("t1")!.Reason);
+    }
+
+    /// <summary>
+    /// The rules are consulted again when the file closes, and this is the last moment at which
+    /// refusing still means it never ran — a deny list reloaded mid-write gets here. It has to
+    /// produce the same shape as a refusal caught at the write, or a caller meets two different
+    /// answers to one question.
+    /// </summary>
+    [Fact]
+    public void ACommandTheRulesRefuseOnlyAtCloseIsDeniedRatherThanRun()
+    {
+        using var denied = new DeniedWorkspace("Bash(sudo:*)");
+
+        Command command = denied.Run("t1", "sudo ls");
+
+        Assert.Equal(CommandState.Denied, command.State);
+        Assert.Contains("Bash(sudo:*)", command.Reason!, StringComparison.Ordinal);
+        Assert.Equal(["command", "status", "reason"], command.VisibleChildren);
+
+        // Never a process, and never an error: MarkFailed would have left both behind.
+        Assert.Null(command.Pid);
+        Assert.Null(command.ExitCode);
+        Assert.Equal(string.Empty, Workspace.Read(command.Stderr));
     }
 
     /// <summary>
@@ -278,6 +369,16 @@ public sealed class ControlSessionTests : IDisposable
         internal CommandRegistry Registry { get; }
 
         internal SettingsWatcher Watcher { get; }
+
+        /// <summary>Reserves an id and starts it, taking the close-time path.</summary>
+        internal Command Run(string id, string text)
+        {
+            Command command = Registry.Reserve(id);
+
+            Registry.Start(command, text);
+
+            return command;
+        }
 
         public void Dispose()
         {

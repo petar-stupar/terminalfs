@@ -48,8 +48,6 @@ internal sealed class TerminalTree : IFilesystem
         QidPathOf(node));
 
     /// <summary>Records a refusal that never reached a control session.</summary>
-    internal void Refused(string reason) => registry.Refused(reason);
-
     /// <summary>When <paramref name="node"/> last changed, as the wire carries it.</summary>
     internal TimeSpec TimeOf(TerminalNode node) => node.ModifiedAt is { } when
         ? new TimeSpec(when.ToUnixTimeSeconds(), 0)

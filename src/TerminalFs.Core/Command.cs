@@ -36,6 +36,7 @@ public sealed class Command
     private Process? process;
     private int? pid;
     private int? exitCode;
+    private string? reason;
     private int leases;
     private ITimer? timer;
     private bool pinned;
@@ -76,6 +77,18 @@ public sealed class Command
 
     /// <summary>What was written after the header. Empty until the control file closes.</summary>
     public string Text { get; private set; } = string.Empty;
+
+    /// <summary>Why it was refused, for a command that never ran. Null for one that did.</summary>
+    public string? Reason
+    {
+        get
+        {
+            lock (gate)
+            {
+                return reason;
+            }
+        }
+    }
 
     /// <summary>Everything the process wrote to its standard output.</summary>
     public OutputFile Stdout { get; }
@@ -119,8 +132,12 @@ public sealed class Command
         }
     }
 
-    /// <summary>Whether it has stopped, however it stopped.</summary>
-    public bool HasExited => State is CommandState.Completed or CommandState.Error;
+    /// <summary>
+    /// Whether it is finished, however it finished — including refused before it ran, which
+    /// finishes it without starting it.
+    /// </summary>
+    public bool HasExited => State is
+        CommandState.Completed or CommandState.Error or CommandState.Denied;
 
     /// <summary>Whether the registry has let go of it.</summary>
     public bool Retired
@@ -175,8 +192,13 @@ public sealed class Command
     {
         CommandState.Completed => "completed\n",
         CommandState.Error => "error\n",
+        CommandState.Denied => "denied\n",
         _ => "running\n",
     };
+
+    /// <summary>Whether there is anything left to wait for. Read under <c>gate</c>.</summary>
+    private bool Finished => state is
+        CommandState.Completed or CommandState.Error or CommandState.Denied;
 
     /// <summary>
     /// The files its directory lists: the ones that carry something, less the ones a caller has
@@ -329,7 +351,7 @@ public sealed class Command
     {
         lock (gate)
         {
-            if (state is CommandState.Completed or CommandState.Error)
+            if (Finished)
             {
                 return;
             }
@@ -349,8 +371,9 @@ public sealed class Command
     }
 
     /// <summary>
-    /// Records a command that never became a process: a shell that would not start, a body that
-    /// was never written, a rule that refused it.
+    /// Records a command that tried to become a process and could not: a shell that would not
+    /// start, or one removed before it ran. A command refused before it ran is
+    /// <see cref="MarkDenied"/> instead, which leaves no exit code and writes no stderr.
     /// </summary>
     internal void MarkFailed(string reason)
     {
@@ -358,7 +381,7 @@ public sealed class Command
 
         lock (gate)
         {
-            if (state is CommandState.Completed or CommandState.Error)
+            if (Finished)
             {
                 return;
             }
@@ -379,6 +402,42 @@ public sealed class Command
         exited.TrySetResult();
 
         ArmIfIdle();
+    }
+
+    /// <summary>
+    /// Records a command that a rule, or its own shape, would not let start. Unlike
+    /// <see cref="MarkFailed"/> this leaves no exit code and writes nothing to <c>stderr</c>:
+    /// nothing ran, so there is nothing for those files to hold, and they are not in the listing.
+    /// </summary>
+    /// <returns>Whether this call was the one that denied it.</returns>
+    internal bool MarkDenied(string text, string why)
+    {
+        lock (gate)
+        {
+            // Only a command that has not started can be denied. A retried write, or one arriving
+            // after the close that ran the command, must not rewrite what already happened.
+            if (state is not CommandState.Reserved)
+            {
+                return false;
+            }
+
+            Text = text;
+            reason = why;
+            state = CommandState.Denied;
+            Touch();
+        }
+
+        Stdout.CloseWriter();
+        Stderr.CloseWriter();
+
+        // A wait can already be blocked on this: the directory exists from the moment the control
+        // file is opened, so another caller may have opened /cmd/<id>/wait while the text was
+        // still arriving. Nothing else will ever arrive to release them.
+        exited.TrySetResult();
+
+        ArmIfIdle();
+
+        return true;
     }
 
     /// <summary>Takes it out of the registry, ending it first if it is still going.</summary>
@@ -430,7 +489,7 @@ public sealed class Command
                 return;
             }
 
-            if (state is not (CommandState.Completed or CommandState.Error))
+            if (!Finished)
             {
                 return;
             }
@@ -490,6 +549,15 @@ public sealed class Command
     /// </summary>
     private List<string> VisibleChildrenLocked()
     {
+        // Nothing ran, so every file that would describe a process would be describing one that
+        // does not exist. What was asked, what happened, and why: there is nothing else to say.
+        if (state is CommandState.Denied)
+        {
+            List<string> refused = ["command", "status", "reason"];
+
+            return hidden.Count == 0 ? refused : [.. refused.Where(name => !hidden.Contains(name))];
+        }
+
         var names = new List<string>(8) { "command" };
 
         if (pid is not null)

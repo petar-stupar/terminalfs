@@ -38,11 +38,11 @@ files. An agent with filesystem tools needs no new tool to use any of it.
 /index.md               how the tree is laid out
 /ctl/index.md           how to run something
 /ctl/<name>             write a command here to run it
-/refused                why the writes that failed, failed
 /cmd/index.md           every command, with its status
 /cmd/<name>/command     the command, as it was written
 /cmd/<name>/pid         the process, while there is one
-/cmd/<name>/status      running, completed or error
+/cmd/<name>/status      running, completed, error or denied
+/cmd/<name>/reason      why it was refused, when it was
 /cmd/<name>/exitcode    once it has stopped
 /cmd/<name>/stdout      what it wrote, as it writes it
 /cmd/<name>/stderr      the same for standard error
@@ -87,7 +87,7 @@ The same caching is why a control file reports a length of zero. When `/ctl` ans
 text, the client read it, laid the command over the front and sent back the whole thing, so what
 ran was the command followed by the tail of its own help. A file with no length has nothing to
 merge into — and, as a consequence, reading one through an SMB mount returns nothing. That is what
-`/ctl/index.md` and `/refused` are for.
+`/ctl/index.md` is for.
 
 ## Watching one
 
@@ -99,7 +99,8 @@ client's own patience would be reported as a broken mount rather than as a comma
 them ordinary files. Open them fresh each time; a handle held open will not see what arrives later.
 
 `ls cmd/<name>` says whether it is still going without reading anything: `pid` and `kill` are there
-while it runs, `exitcode` once it has stopped.
+while it runs, `exitcode` once it has stopped. A directory holding only `command`, `status` and
+`reason` is one that was refused before it ran; there is no output because nothing ran.
 
 ## Stopping and clearing up
 
@@ -111,7 +112,8 @@ rm -r ~/mnt/terminalfs/cmd/build           # remove it, ending it first if it is
 A finished command is removed on its own once nothing has read it for `--keep` seconds (60 by
 default), so a long session does not fill up with old output. Removing a directory while something
 is reading it takes the command out of the tree at once and leaves the bytes until the reader is
-done.
+done. A refused command is kept and cleared the same way, with the clock starting at the write that
+failed.
 
 ## Refusing a command
 
@@ -141,19 +143,33 @@ the server runs, and **an edit that does not parse keeps the rules already in fo
 that truncates before it writes leaves a window in which the file is empty, and empty for a deny
 list means everything is permitted.
 
+A refused command still gets its directory. The write to `/ctl/<name>` fails, and `/cmd/<name>/`
+appears holding three files — `command`, what you wrote; `status`, which reads `denied`; and
+`reason`, which names the rule. Nothing else is there, because nothing ran: a `stdout` on a command
+that never started would be a file promising output that can never arrive. The name is spent until
+the directory is removed, which is the rule every other command already follows.
+
 **It is not a sandbox.** A shell has too many ways of spelling the same thing for a textual list to
 be complete; `$(which sudo)` is not `sudo`. It exists to stop an agent doing by accident what
 nobody asked for.
 
-### Why refusals are in a file
+### Where the reason is
 
-A refusal arrives at a mounted caller as a number and nothing else — `Invalid argument`,
-`Operation not permitted` — because 9P2000.L, which a Linux mount and the SMB bridge both speak,
-carries no sentence with an error. The reason is in `/refused`, newest last:
+A refusal arrives at a mounted caller as a number and nothing else — `Operation not permitted`,
+`File exists` — because 9P2000.L, which a Linux mount and the SMB bridge both speak, carries no
+sentence with an error. So the reason is put where the caller can walk to it.
 
-```text
-14:00:09  lr2: denied by rule 'Bash(echo allowed*)' in /Users/you/.config/terminalfs/settings.json
+```sh
+$ echo 'sudo ls' > ~/mnt/terminalfs/ctl/lr2      # Operation not permitted
+$ ls ~/mnt/terminalfs/cmd/lr2
+command  status  reason
+$ cat ~/mnt/terminalfs/cmd/lr2/reason
+denied by rule 'Bash(sudo:*)' in /Users/you/.config/terminalfs/settings.json
 ```
+
+`File exists` is the one refusal with nowhere to write a sentence: the name belongs to a command
+that is already there. `ls cmd/<name>` is the answer — the directory exists, which is why the name
+was not free. Remove it, or pick another name.
 
 ## Install
 

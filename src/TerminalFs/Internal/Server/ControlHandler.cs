@@ -46,11 +46,10 @@ internal sealed class ControlHandler(TerminalControl control, TerminalTree tree)
         }
         catch (CommandException refusal)
         {
-            // Recorded here as well as thrown, because this refusal never reaches a session: the
-            // name was taken before there was anything to write to. On a mount the caller is
-            // told only a number, so /refused is where the sentence has to be.
-            tree.Refused($"{control.Name}: {refusal.Message}");
-
+            // This is the one refusal with nowhere to leave a sentence: the name belongs to a
+            // command that already exists, so there is no command of ours to write it on. A mount
+            // reports only "File exists" — and the directory at /cmd/<name> is the reason, which
+            // is why that is enough.
             throw TerminalTree.Refused(refusal);
         }
     }
