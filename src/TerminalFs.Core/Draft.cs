@@ -147,6 +147,32 @@ public sealed class Draft
         }
     }
 
+    /// <summary>
+    /// How long the command written to it is, once one has been; zero until then.
+    /// </summary>
+    /// <remarks>
+    /// Zero while the file can still be written, because a client that believes a file has
+    /// contents treats a write as a modification of them: macOS smbfs once laid a command over
+    /// the front of what it thought was already there and sent the whole thing, and what ran was
+    /// the command followed by the tail of this file's own help. Nothing to merge into means
+    /// nothing merged.
+    /// </remarks>
+    /// <value>
+    /// Once it has been decided the hazard is gone — a decided name cannot be opened again, by
+    /// anyone — and the length is worth telling the truth about, because a client that writes a
+    /// file and then checks what it wrote gets an answer rather than a silent zero.
+    /// </value>
+    public int Length
+    {
+        get
+        {
+            lock (gate)
+            {
+                return text is null ? 0 : System.Text.Encoding.UTF8.GetByteCount(text);
+            }
+        }
+    }
+
     /// <summary>Whether the registry has let go of it, however it let go.</summary>
     public bool Gone
     {

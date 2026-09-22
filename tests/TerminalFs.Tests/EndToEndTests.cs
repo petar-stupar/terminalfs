@@ -227,6 +227,32 @@ public sealed class EndToEndTests
         Assert.Null(served.Registry.FindDraft("t1"));
     }
 
+    /// <summary>
+    /// A name that has been written to reports what was written, because by then nothing can open
+    /// it again and there is no cache left to merge into a command. A client that writes a file
+    /// atomically stats it afterwards, and a zero there is a write it reports as having silently
+    /// failed — for a command that in fact ran.
+    /// </summary>
+    [Fact]
+    public async Task ANameThatHasBeenWrittenToReportsWhatWasWritten()
+    {
+        await using Served served = await Served.StartAsync(settle: TimeSpan.FromSeconds(30));
+        await using NinePSession session = await served.ConnectAsync();
+
+        await RunAsync(session, "t1.tmp", "echo hello");
+
+        // A name that can still be written to reports nothing, which is what keeps a client from
+        // merging its own cache into the command it is about to send.
+        await (await session.CreateFileAsync("/ctl/t2", cancellationToken: Token)).DisposeAsync();
+
+        Assert.Equal(0UL, (await session.GetAttrAsync("/ctl/t2", Token)).Size);
+        Assert.Equal(10UL, (await session.GetAttrAsync("/ctl/t1.tmp", Token)).Size);
+
+        await session.RenameAsync("/ctl/t1.tmp", "/ctl/t1", Token);
+
+        Assert.Equal(10UL, (await session.GetAttrAsync("/ctl/t1", Token)).Size);
+    }
+
     [Fact]
     public async Task WaitAnswersCompletedAndTheDirectoryThenListsExitCodeNotPid()
     {

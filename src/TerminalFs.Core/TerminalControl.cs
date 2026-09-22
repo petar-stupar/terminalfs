@@ -20,6 +20,12 @@ public abstract class TerminalControl : TerminalNode
     /// <exception cref="CommandException">Something else is writing it, or it has been decided.</exception>
     public abstract ControlSession Open();
 
+    /// <summary>
+    /// How long the command written to it is, once one has been; zero while it can still be
+    /// written, so that nothing a client caches can be merged into what it sends.
+    /// </summary>
+    public abstract int Length { get; }
+
     /// <summary>Gives it another name.</summary>
     /// <remarks>
     /// Here rather than only on the directory because 9P spells a rename two ways — <c>.L</c>

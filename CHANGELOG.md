@@ -28,6 +28,11 @@ refuses a tag whose version has no section here.
   says how long that window is, 250 milliseconds by default, and `--settle 0` runs at the close as
   before. Nothing waits it out in practice: anything that asks about the command under `/cmd` runs
   it at once, so `echo … > ctl/t1; cat cmd/t1/wait` is unchanged.
+- **A name that has been written to reports how long its command is.** A control file still
+  reports no length while it can be written — that zero is what stops a client merging its own
+  cache into the command it is about to send — but once the name has been decided nothing can open
+  it again, and a client that writes a file atomically and then stats it to check what it wrote
+  gets an answer rather than a zero it reports as a silent failure.
 - A copy of `SKILL.md` taken before this release does not know it can create a file before writing
   to it, or rename one into place. Take it again.
 

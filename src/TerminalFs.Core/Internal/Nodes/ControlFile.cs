@@ -38,6 +38,9 @@ internal sealed class ControlFile : TerminalControl
     public override DateTimeOffset? ModifiedAt => draft.ChangedAt;
 
     /// <inheritdoc />
+    public override int Length => draft.Length;
+
+    /// <inheritdoc />
     public override ControlSession Open() => registry.OpenControl(draft, claiming);
 
     /// <inheritdoc />

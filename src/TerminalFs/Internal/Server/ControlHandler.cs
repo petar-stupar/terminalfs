@@ -13,19 +13,28 @@ internal sealed class ControlHandler(TerminalControl control, TerminalTree tree)
     public Qid Qid => tree.QidOf(control);
 
     /// <summary>
-    /// Reports a length of zero, because there is nothing here to read.
+    /// Reports a length of zero while the file can still be written, and what was written once it
+    /// cannot.
     /// </summary>
     /// <remarks>
-    /// Not a rounding-down of the truth: a client that believes a file has contents treats a
-    /// write as a modification of them, reading what it thinks is there and sending back the
-    /// merged result. When this file answered with help text, macOS smbfs laid the command over
-    /// the front of it and sent the whole thing, so what ran was the command followed by the tail
-    /// of its own help — a parse error in a line nobody wrote. A file with no length has nothing
-    /// to merge.
+    /// <para>
+    /// The zero is not a rounding-down of the truth: a client that believes a file has contents
+    /// treats a write as a modification of them, reading what it thinks is there and sending back
+    /// the merged result. When this file answered with help text, macOS smbfs laid the command
+    /// over the front of it and sent the whole thing, so what ran was the command followed by the
+    /// tail of its own help — a parse error in a line nobody wrote. A file with no length has
+    /// nothing to merge.
+    /// </para>
+    /// <para>
+    /// Once the name has been decided that hazard is gone, because it cannot be opened again by
+    /// anyone. The length is then worth telling the truth about: a client that writes a file
+    /// atomically stats it afterwards to check what it wrote, and a zero there is a write it
+    /// reports as having silently failed — for a command that in fact ran.
+    /// </para>
     /// </remarks>
     public ValueTask<Attr> GetAttrAsync(CancellationToken cancellationToken = default) =>
         ValueTask.FromResult(TerminalAttributes.Of(
-            Qid, FileKind.File, TerminalAttributes.ControlMode, 0, tree.Started));
+            Qid, FileKind.File, TerminalAttributes.ControlMode, (ulong)control.Length, tree.Started));
 
     /// <summary>
     /// Opens the file for writing a command into.
