@@ -153,11 +153,11 @@ internal static class TreeText
         {
             page.Append(
                 """
-                Nothing has been run yet. Write a command to `/ctl` and its directory appears
-                here:
+                Nothing has been run yet. Write a command to `/ctl/<name>` and `<name>`
+                appears here:
 
                 ```text
-                echo 'run first echo hello' > /ctl
+                echo 'echo hello' > /ctl/first
                 ```
 
                 """);
@@ -252,7 +252,7 @@ internal static class TreeText
           """;
 
     /// <summary>The page describing the skill, as opposed to the skill itself.</summary>
-    internal static string SkillIndex(DateTimeOffset builtAt) =>
+    internal static string SkillIndex(DateTimeOffset builtAt, string? mountPath) =>
         new Frontmatter(OkfType.Of(TerminalNodeKind.Skill))
             .Add("title", "terminalfs")
             .Add("description", "Running shell commands by writing to a file.")
@@ -262,17 +262,42 @@ internal static class TreeText
           # terminalfs
 
           [SKILL.md](SKILL.md) is the skill. Copy it into your project's skills directory —
-          `.claude/skills/terminalfs/SKILL.md` or wherever your harness looks — and replace
-          `<mount>` with where this tree is mounted. Nothing here runs from the mount.
+          `.claude/skills/terminalfs/SKILL.md` or wherever your harness looks. Nothing here runs
+          from the mount.
 
-          """;
+
+          """
+        + (mountPath is null
+            ? "The paths in it are written `<mount>`; replace that with where this tree is\nmounted.\n"
+            : "The paths in it are already the ones on this machine, so copy it as it is.\n");
 
     /// <summary>
-    /// The skill an agent harness reads. No OKF frontmatter: a skill file's frontmatter belongs
-    /// to the harness, which matches on <c>name</c> and <c>description</c>, and inventing extra
-    /// fields there would be noise.
+    /// The skill an agent harness reads, with <paramref name="mountPath"/> written into it where
+    /// it is known.
     /// </summary>
-    internal static string Skill =>
+    /// <remarks>
+    /// <para>
+    /// No OKF frontmatter: a skill file's frontmatter belongs to the harness, which matches on
+    /// <c>name</c> and <c>description</c>, and inventing extra fields there would be noise.
+    /// </para>
+    /// <para>
+    /// This is the only page that carries the mountpoint, and the only one written with a
+    /// placeholder, for the same reason: it is meant to be copied *out* of the tree and followed
+    /// from outside it. The other pages are read through the mount, where <c>/ctl/build</c> is
+    /// the right way to name a position in the tree and a reader already standing in it needs no
+    /// prefix. Do not make them match.
+    /// </para>
+    /// <para>
+    /// The substitution is <c>&lt;mount&gt;</c> and nothing else. <c>&lt;name&gt;</c> and
+    /// <c>&lt;id&gt;</c> in this text are placeholders a reader is meant to fill in themselves,
+    /// and a general template pass would eat them.
+    /// </para>
+    /// </remarks>
+    internal static string Skill(string? mountPath) => mountPath is null
+        ? SkillText
+        : SkillText.Replace("<mount>", At(mountPath), StringComparison.Ordinal);
+
+    private static string SkillText =>
         """
         ---
         name: terminalfs
@@ -369,6 +394,18 @@ internal static class TreeText
         name: the refused one stays taken until you remove it.
 
         """;
+
+    /// <summary>
+    /// A mount path as it is written into the skill: one trailing separator taken off, so
+    /// <c>&lt;mount&gt;/ctl/build</c> cannot become <c>//ctl/build</c>.
+    /// </summary>
+    /// <remarks>
+    /// The separators themselves are left as they came. Translating them would be guessing which
+    /// side of a namespace boundary the reader is on, which is the mistake this whole substitution
+    /// exists to avoid.
+    /// </remarks>
+    private static string At(string mountPath) =>
+        mountPath.TrimEnd('/', '\\') is { Length: > 0 } trimmed ? trimmed : mountPath;
 
     private static string Count(int commands) => commands switch
     {

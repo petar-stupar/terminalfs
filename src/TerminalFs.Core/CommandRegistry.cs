@@ -38,6 +38,7 @@ public sealed class CommandRegistry : IDisposable
         OutputRoot = outputRoot;
         Shell = ShellSpec.Resolve(options.Shell);
         WorkingDirectory = Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory);
+        MountPath = options.MountPath;
 
         DateTimeOffset builtAt = options.TimeProvider.GetUtcNow();
         changedAt = builtAt;
@@ -56,7 +57,7 @@ public sealed class CommandRegistry : IDisposable
                     () => ChangedAt),
                 new ControlDirectory(this, builtAt),
                 new CommandsDirectory(this, options.WaitTimeout),
-                Skills.Directory(builtAt),
+                Skills.Directory(builtAt, options.MountPath),
             ]);
     }
 
@@ -71,6 +72,9 @@ public sealed class CommandRegistry : IDisposable
 
     /// <summary>The directory every command runs in.</summary>
     public string WorkingDirectory { get; }
+
+    /// <summary>Where this tree can be read from, or null when nobody has said.</summary>
+    public string? MountPath { get; }
 
     /// <summary>What the registry was told to do.</summary>
     public CommandOptions Options => options;

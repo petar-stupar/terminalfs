@@ -8,6 +8,19 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+### Changed
+
+- **The served `SKILL.md` names the mountpoint** when this server was told one — because it did
+  the mounting, or because `--path` said where you would mount it yourself. Otherwise it keeps
+  writing `<mount>` for you to replace: a path nobody stated would be a guess, and a skill naming
+  a directory that is not there is worse than one that asks to be filled in. `--path` now means
+  something without `--mount` for exactly this. If the agent reading the skill is in a different
+  filesystem namespace from the server — a container that bind-mounts the host's mountpoint
+  elsewhere — the path is still the server's, and there is no flag for that yet.
+- `/cmd/index.md` told a reader with no commands yet to run `echo 'run first echo hello' > /ctl`,
+  which is the single-control-file protocol removed in 0.2.0. It is the one page an agent reads
+  before it has run anything.
+
 ## [0.2.0] — 2026-09-18
 
 ### Changed

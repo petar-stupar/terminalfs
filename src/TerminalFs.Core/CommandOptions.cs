@@ -32,6 +32,18 @@ public sealed record CommandOptions
     /// <summary>Where the output files live, or null for a directory under the temporary one.</summary>
     public string? OutputRoot { get; init; }
 
+    /// <summary>
+    /// Where this tree can be read from, or null when nobody has said.
+    /// </summary>
+    /// <remarks>
+    /// A caption and nothing more: the served skill prints it in place of a placeholder, because
+    /// that page is the one meant to be copied out of the tree and followed from outside it.
+    /// Nothing in here acts on it, and null rather than a default because a path nobody stated is
+    /// a guess, and a skill naming a directory that is not there is worse than one that asks to
+    /// be filled in.
+    /// </remarks>
+    public string? MountPath { get; init; }
+
     /// <summary>The rules in force, or null to refuse nothing.</summary>
     /// <remarks>
     /// Null is for the suite, which mostly tests something other than the rules. The program

@@ -11,8 +11,15 @@ internal sealed record CliOptions
     /// <summary>The 9P address to listen on.</summary>
     internal string Listen { get; init; } = "";
 
-    /// <summary>Where the tree should appear on this machine.</summary>
-    internal string MountPath { get; init; } = MountSettings.DefaultMountPath;
+    /// <summary>
+    /// Where the tree should appear on this machine, or null if nobody said.
+    /// </summary>
+    /// <remarks>
+    /// Null rather than the default, because the two mean different things to the served skill:
+    /// it prints a path somebody stated and keeps a placeholder otherwise. Mounting resolves the
+    /// default itself, so <see cref="MountSettings"/> is unaffected.
+    /// </remarks>
+    internal string? MountPath { get; init; }
 
     /// <summary>Whether to mount after starting the server.</summary>
     internal bool Mount { get; init; }
@@ -66,7 +73,7 @@ internal sealed record CliOptions
     /// way back out: <c>--unmount --path ./x</c> would refuse to detach the mount it had just made.
     /// </remarks>
     internal MountSettings MountSettings => new(
-        Path.GetFullPath(MountPath),
+        Path.GetFullPath(MountPath ?? MountSettings.DefaultMountPath),
         MountSettings.StrategyFor(Docker),
         ListenPort ?? NinePPort,
         SmbPort);
@@ -261,7 +268,9 @@ internal sealed record CliOptions
           --mount                     serve, then mount it; Linux mounts 9P directly and
                                       macOS goes through a container that re-exports SMB
           --mount-docker              serve, then mount through the container everywhere
-          --path <dir>                where to mount; ~/mnt/terminalfs by default
+          --path <dir>                where to mount; ~/mnt/terminalfs by default. Stating it
+                                      is also what puts a real path into the served skill when
+                                      you mount the tree yourself
           --unmount                   unmount and remove the bridge, without serving
           --restart-docker-container  recreate the bridge container and mount again
           --listen <url>              9P address; tcp://127.0.0.1:<port> by default. This

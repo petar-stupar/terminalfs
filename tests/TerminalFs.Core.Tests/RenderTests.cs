@@ -23,6 +23,14 @@ public sealed class RenderTests : IDisposable
             (await page.ContentAsync(TestContext.Current.CancellationToken)).Span);
     }
 
+    private static async Task<string> Skill(Workspace workspace)
+    {
+        var skills = (TerminalDirectory)workspace.Registry.Root.Find("skills")!;
+        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
+
+        return await Text(skill.Find("SKILL.md")!);
+    }
+
     private static IEnumerable<TerminalNode> Walk(TerminalDirectory directory)
     {
         foreach (TerminalNode child in directory.Children)
@@ -192,10 +200,7 @@ public sealed class RenderTests : IDisposable
     [Fact]
     public async Task TheSkillDescribesRunningWaitingReadingAndRemoving()
     {
-        var skills = (TerminalDirectory)Registry.Root.Find("skills")!;
-        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
-
-        string text = await Text(skill.Find("SKILL.md")!);
+        string text = await Skill(workspace);
 
         Assert.StartsWith("---\nname: terminalfs\n", text, StringComparison.Ordinal);
 
@@ -209,27 +214,65 @@ public sealed class RenderTests : IDisposable
     }
 
     /// <summary>
-    /// A command directory's files answer what they are for, and a field a caller reads with
-    /// <c>cat</c> ends in a newline so it does not run into the next thing the terminal prints.
+    /// The skill is the one page meant to be copied out of the tree and followed from outside it,
+    /// so it is the one page that needs to name where the tree is. Nobody said here, so it keeps
+    /// the placeholder: a path this server guessed at would send an agent to a directory that is
+    /// not there, which is worse than one that asks to be filled in.
     /// </summary>
     [Fact]
-    public async Task EachFieldOfACommandAnswersWithATrailingNewline()
+    public async Task TheSkillKeepsItsPlaceholderWhenNobodyHasSaidWhereTheTreeIs()
     {
-        Command command = workspace.Run("t1", "echo hello");
-        await Workspace.Finished(command);
+        Assert.Contains("<mount>/ctl/build", await Skill(workspace), StringComparison.Ordinal);
 
-        var commands = (TerminalDirectory)Registry.Root.Find("cmd")!;
-        var directory = (TerminalDirectory)commands.Find("t1")!;
+        var skills = (TerminalDirectory)Registry.Root.Find("skills")!;
+        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
 
-        Assert.Equal("echo hello\n", await Text(directory.Find("command")!));
-        Assert.Equal("completed\n", await Text(directory.Find("status")!));
-        Assert.Equal("0\n", await Text(directory.Find("exitcode")!));
+        Assert.Contains(
+            "replace that with where this tree is",
+            await Text(skill.Find("index.md")!),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheSkillNamesTheMountpointWhenOneIsKnown()
+    {
+        using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs" });
+
+        string text = await Skill(mounted);
+
+        Assert.Contains("echo 'dotnet build' > /mnt/tfs/ctl/build", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("<mount>", text, StringComparison.Ordinal);
+
+        var skills = (TerminalDirectory)mounted.Registry.Root.Find("skills")!;
+        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
+
+        Assert.Contains(
+            "copy it as it is",
+            await Text(skill.Find("index.md")!),
+            StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// The three files a refused command leaves, as a caller reads them. This is the whole of the
-    /// reason channel on a mount, because the dialect one speaks carries a number and no sentence.
+    /// Only <c>&lt;mount&gt;</c> is substituted. The other angle-bracketed words are placeholders
+    /// a reader is meant to fill in themselves, and a general template pass would eat them.
     /// </summary>
+    [Fact]
+    public async Task TheSkillLeavesItsOtherPlaceholdersAlone()
+    {
+        using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs" });
+
+        Assert.Contains("/mnt/tfs/ctl/<name>", await Skill(mounted), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ATrailingSeparatorOnTheMountpointDoesNotDoubleUp()
+    {
+        using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs/" });
+
+        Assert.Contains("/mnt/tfs/ctl/build", await Skill(mounted), StringComparison.Ordinal);
+        Assert.DoesNotContain("//ctl", await Skill(mounted), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ADeniedCommandDirectoryHoldsOnlyWhatWasAskedWhatHappenedAndWhy()
     {

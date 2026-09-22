@@ -51,6 +51,11 @@ files. An agent with filesystem tools needs no new tool to use any of it.
 /skills/terminalfs/SKILL.md   an agent skill for using this
 ```
 
+`SKILL.md` names the mountpoint outright when this server was told one — either because it did
+the mounting, or because `--path` said where you would. Otherwise it writes `<mount>` for you to
+replace, because a path nobody stated would be a guess, and a skill naming a directory that is
+not there is worse than one that asks to be filled in.
+
 Pages are [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf):
 markdown with YAML frontmatter and an `index.md` at every level.
 
@@ -201,7 +206,8 @@ terminalfs --mount-docker
 
 `--unmount` clears up a mount and its container, and is safe to run when nothing is mounted.
 `--shell` and `--cwd` say what commands run under and where; `--keep` how long a finished command
-is kept; `--wait-timeout` how long a read of `wait` blocks.
+is kept; `--wait-timeout` how long a read of `wait` blocks. `--path` says where the tree goes, and
+states it for the served skill even when you mount it yourself.
 
 ### What it cannot do
 

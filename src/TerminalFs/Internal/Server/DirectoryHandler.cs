@@ -96,12 +96,17 @@ internal sealed class DirectoryHandler(TerminalDirectory directory, TerminalTree
         throw new NinePException(NinePError.FromErrno(Errno.EROFS));
 
     /// <summary>
-    /// Refuses a create. A command is made by writing to <c>/ctl</c>, not by making a directory:
-    /// an empty <c>/cmd/&lt;id&gt;</c> would have no command in it and no way to be given one.
+    /// Refuses a create. A command is made by writing to <c>/ctl/&lt;id&gt;</c>, not by making a
+    /// directory: an empty <c>/cmd/&lt;id&gt;</c> would have no command in it and no way to be
+    /// given one.
     /// </summary>
+    /// <remarks>
+    /// A client creating a control file does not reach here, because every valid name under
+    /// <c>/ctl</c> already resolves on a walk and there is nothing left to create.
+    /// </remarks>
     public ValueTask<IHandler> CreateAsync(CreateRequest request, CancellationToken cancellationToken = default) =>
         throw new NinePException(new NinePError(
-            "a command is made by writing 'run <id> <command>' to /ctl", Errno.EPERM));
+            "a command is made by writing it to /ctl/<id>", Errno.EPERM));
 
     /// <inheritdoc />
     public ValueTask RenameAsync(

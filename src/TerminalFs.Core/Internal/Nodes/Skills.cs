@@ -10,7 +10,7 @@ namespace TerminalFs.Core.Internal.Nodes;
 /// </remarks>
 internal static class Skills
 {
-    internal static TerminalDirectory Directory(DateTimeOffset builtAt) =>
+    internal static TerminalDirectory Directory(DateTimeOffset builtAt, string? mountPath) =>
         new StaticDirectory(
             "skills",
             TerminalNodeKind.Skill,
@@ -26,12 +26,12 @@ internal static class Skills
                             "index.md",
                             TerminalNodeKind.Skill,
                             "/skills/terminalfs/index.md",
-                            () => TreeText.SkillIndex(builtAt)),
+                            () => TreeText.SkillIndex(builtAt, mountPath)),
                         new TextPage(
                             "SKILL.md",
                             TerminalNodeKind.Skill,
                             "/skills/terminalfs/SKILL.md",
-                            () => TreeText.Skill),
+                            () => TreeText.Skill(mountPath)),
                     ]),
             ]);
 }
