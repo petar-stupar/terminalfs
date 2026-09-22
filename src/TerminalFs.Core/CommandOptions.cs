@@ -17,6 +17,19 @@ public sealed record CommandOptions
     public TimeSpan KeepAfterExit { get; init; } = TimeSpan.FromSeconds(60);
 
     /// <summary>
+    /// How long a name that has been written to waits before it becomes a command and runs.
+    /// </summary>
+    /// <remarks>
+    /// A client that writes to a temporary name and renames it into place closes the temporary
+    /// file <em>before</em> it renames, so the close is the only signal there is and running on
+    /// it would run the command under a name nobody chose. This window is how long a rename has
+    /// to arrive. Nothing waits it out in practice: anything that asks about the command under
+    /// <c>/cmd</c> commits it at once, and this is only the backstop for a command nobody looks
+    /// at.
+    /// </remarks>
+    public TimeSpan Settle { get; init; } = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
     /// How long a read of <c>wait</c> blocks before answering <c>running</c>.
     /// </summary>
     /// <remarks>

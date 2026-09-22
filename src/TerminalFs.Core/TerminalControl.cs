@@ -16,7 +16,16 @@ public abstract class TerminalControl : TerminalNode
     {
     }
 
-    /// <summary>Opens the file, taking the id for a command that has not been written yet.</summary>
-    /// <exception cref="CommandException">The id is not usable, or is already taken.</exception>
+    /// <summary>Opens the file, for a command that has not been written yet.</summary>
+    /// <exception cref="CommandException">Something else is writing it, or it has been decided.</exception>
     public abstract ControlSession Open();
+
+    /// <summary>Gives it another name.</summary>
+    /// <remarks>
+    /// Here rather than only on the directory because 9P spells a rename two ways — <c>.L</c>
+    /// sends it to the parent, and every older dialect sends a <c>Twstat</c> carrying a name to
+    /// the file itself — and both have to arrive at one implementation.
+    /// </remarks>
+    /// <exception cref="CommandException">The name is not usable, or is already taken.</exception>
+    public abstract void Rename(string newName);
 }

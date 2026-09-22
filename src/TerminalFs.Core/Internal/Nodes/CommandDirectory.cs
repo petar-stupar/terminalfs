@@ -16,7 +16,10 @@ internal sealed class CommandDirectory : TerminalDirectory
     private readonly TimeSpan waitTimeout;
 
     internal CommandDirectory(CommandRegistry registry, Command command, TimeSpan waitTimeout)
-        : base(command.Id, TerminalNodeKind.Command, "/cmd/" + command.Id)
+        : base(
+            command.Id,
+            TerminalNodeKind.Command,
+            "/cmd#" + command.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture))
     {
         this.registry = registry;
         this.command = command;

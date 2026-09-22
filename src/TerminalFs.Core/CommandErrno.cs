@@ -33,4 +33,7 @@ public static class CommandErrno
 
     /// <summary>A file was named where a directory was meant.</summary>
     public const int NotDirectory = 20;
+
+    /// <summary>A rename that would move something out of the directory it belongs to.</summary>
+    public const int CrossDevice = 18;
 }

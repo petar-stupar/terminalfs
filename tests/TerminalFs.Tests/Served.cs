@@ -43,9 +43,18 @@ internal sealed class Served : IAsyncDisposable
     internal NinePAddress Address => server.Endpoints[0];
 
     /// <summary>Starts a server on a port the kernel picks.</summary>
+    /// <param name="deny">Rules to refuse commands by, or none.</param>
+    /// <param name="keep">How long a finished command, or an unused name, is kept.</param>
+    /// <param name="settle">
+    /// How long a name waits before the command written to it runs. Zero unless a test says
+    /// otherwise: most of these are about something other than that window, and several read the
+    /// registry directly rather than through the tree, which is the one way to ask about a
+    /// command that does not settle it.
+    /// </param>
     internal static async Task<Served> StartAsync(
         IEnumerable<string>? deny = null,
-        TimeSpan? keep = null)
+        TimeSpan? keep = null,
+        TimeSpan? settle = null)
     {
         string root = Path.Combine(Path.GetTempPath(), "terminalfs-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -68,6 +77,7 @@ internal sealed class Served : IAsyncDisposable
             OutputRoot = Path.Combine(root, "out"),
             WorkingDirectory = root,
             KeepAfterExit = keep ?? TimeSpan.FromSeconds(60),
+            Settle = settle ?? TimeSpan.Zero,
             WaitTimeout = TimeSpan.FromSeconds(20),
             Settings = watcher,
         });

@@ -124,6 +124,7 @@ internal static class Program
             Shell = options.Shell,
             WorkingDirectory = options.WorkingDirectory,
             KeepAfterExit = options.Keep,
+            Settle = options.Settle,
             WaitTimeout = options.WaitTimeout,
             Settings = settings,
 

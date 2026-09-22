@@ -30,10 +30,15 @@ public sealed class EndToEndTests
         }
     }
 
-    /// <summary>Writes one command, as a shell redirect does: open, write, close.</summary>
+    /// <summary>Writes one command, as a shell redirect does: create, write, close.</summary>
+    /// <remarks>
+    /// A create and not an open. A name nobody has taken is not a file under <c>/ctl</c>, which
+    /// is what lets a client make one — and what every shell redirect does, since <c>&gt;</c> is
+    /// <c>O_WRONLY|O_CREAT|O_TRUNC</c>.
+    /// </remarks>
     private static async Task RunAsync(NinePSession session, string id, string text)
     {
-        NinePFid fid = await session.OpenFileAsync("/ctl/" + id, OpenMode.Write, OpenFlags.Truncate, Token);
+        NinePFid fid = await session.CreateFileAsync("/ctl/" + id, cancellationToken: Token);
 
         await using (fid.ConfigureAwait(false))
         {
@@ -64,15 +69,162 @@ public sealed class EndToEndTests
         await using Served served = await Served.StartAsync();
         await using NinePSession session = await served.ConnectAsync();
 
-        NinePFid fid = await session.OpenFileAsync("/ctl/t1", OpenMode.Write, OpenFlags.Truncate, Token);
+        NinePFid fid = await session.CreateFileAsync("/ctl/t1", cancellationToken: Token);
 
         await fid.WriteAllAsync(Encoding.UTF8.GetBytes("echo hello"), Token);
 
-        Assert.Equal(CommandState.Reserved, served.Registry.Find("t1")!.State);
+        // The name is taken and nothing else: no process, and nothing under /cmd to describe one.
+        Assert.NotNull(served.Registry.FindDraft("t1"));
+        Assert.Null(served.Registry.Find("t1"));
 
         await fid.DisposeAsync();
 
         Assert.Equal("completed", (await ReadAsync(session, "/cmd/t1/wait")).Trim());
+    }
+
+    /// <summary>
+    /// The bug this change exists for. While every valid name resolved on a walk there was never
+    /// anything left to create, so an exclusive create could only ever answer "file exists" — and
+    /// an agent harness whose write tool opens a temporary file with <c>O_EXCL</c> could not use
+    /// this tree at all.
+    /// </summary>
+    [Fact]
+    public async Task CreatingAControlFileSucceedsForANameNobodyHasTaken()
+    {
+        await using Served served = await Served.StartAsync();
+        await using NinePSession session = await served.ConnectAsync();
+
+        NinePFid made = await session.CreateFileAsync("/ctl/t1", cancellationToken: Token);
+
+        await using (made.ConfigureAwait(false))
+        {
+            Assert.NotNull(served.Registry.FindDraft("t1"));
+        }
+    }
+
+    [Fact]
+    public async Task CreatingAControlFileIsRefusedForANameThatIsTaken()
+    {
+        await using Served served = await Served.StartAsync();
+        await using NinePSession session = await served.ConnectAsync();
+
+        await (await session.CreateFileAsync("/ctl/t1", cancellationToken: Token)).DisposeAsync();
+
+        NinePException refused = await Assert.ThrowsAsync<NinePException>(
+            async () => await session.CreateFileAsync("/ctl/t1", cancellationToken: Token));
+
+        Assert.Equal(Errno.EEXIST, refused.Error.Errno);
+    }
+
+    /// <summary>
+    /// A name created and never written to leaves nothing behind: no directory, no output, no
+    /// entry under <c>/cmd</c>. Filling <c>/cmd</c> with probe opens and half-written temporary
+    /// files is what this change is about.
+    /// </summary>
+    [Fact]
+    public async Task ANameCreatedAndNeverWrittenLeavesNothingUnderCmd()
+    {
+        await using Served served = await Served.StartAsync();
+        await using NinePSession session = await served.ConnectAsync();
+
+        await (await session.CreateFileAsync("/ctl/t1", cancellationToken: Token)).DisposeAsync();
+
+        IReadOnlyList<DirEntry> commands = await session.ReadDirAsync("/cmd", Token);
+
+        Assert.Equal(["index.md"], commands.Select(entry => entry.Name));
+
+        // It is a file under /ctl though: a name nobody can see is a name nobody can clean up.
+        IReadOnlyList<DirEntry> control = await session.ReadDirAsync("/ctl", Token);
+
+        Assert.Equal(["index.md", "t1"], control.Select(entry => entry.Name));
+
+        await session.RemoveAsync("/ctl/t1", Token);
+
+        Assert.Null(served.Registry.FindDraft("t1"));
+    }
+
+    /// <summary>
+    /// The documented flow, over a socket, with a real settle window and no clock to move: a
+    /// write followed at once by a read of <c>wait</c> must not miss. This is the only place that
+    /// race is real.
+    /// </summary>
+    [Fact]
+    public async Task AWriteFollowedAtOnceByAReadOfWaitNeverMisses()
+    {
+        await using Served served = await Served.StartAsync(settle: TimeSpan.FromSeconds(30));
+        await using NinePSession session = await served.ConnectAsync();
+
+        await RunAsync(session, "t1", "echo hello");
+
+        Assert.Equal("completed", (await ReadAsync(session, "/cmd/t1/wait")).Trim());
+        Assert.Equal("hello", (await ReadAsync(session, "/cmd/t1/stdout")).Trim());
+    }
+
+    /// <summary>
+    /// The shape this change exists for, end to end: a client writes to a temporary name, closes
+    /// it, and renames it into place. Nothing ever runs under the temporary name.
+    /// </summary>
+    [Fact]
+    public async Task WritingToATemporaryNameAndRenamingItRunsItUnderTheFinalName()
+    {
+        await using Served served = await Served.StartAsync(settle: TimeSpan.FromSeconds(30));
+        await using NinePSession session = await served.ConnectAsync();
+
+        await RunAsync(session, "build.tmp.87694", "echo hello");
+
+        await session.RenameAsync("/ctl/build.tmp.87694", "/ctl/build", Token);
+
+        Assert.Equal("completed", (await ReadAsync(session, "/cmd/build/wait")).Trim());
+        Assert.Equal("hello", (await ReadAsync(session, "/cmd/build/stdout")).Trim());
+
+        Assert.Null(served.Registry.Find("build.tmp.87694"));
+        Assert.Null(served.Registry.FindDraft("build.tmp.87694"));
+    }
+
+    [Fact]
+    public async Task RenamingANameThatHasAlreadyRunIsRefused()
+    {
+        await using Served served = await Served.StartAsync();
+        await using NinePSession session = await served.ConnectAsync();
+
+        await RunAsync(session, "t1", "echo hello");
+        Assert.Equal("completed", (await ReadAsync(session, "/cmd/t1/wait")).Trim());
+
+        NinePException refused = await Assert.ThrowsAsync<NinePException>(
+            async () => await session.RenameAsync("/ctl/t1", "/ctl/t2", Token));
+
+        Assert.Equal(Errno.ENOENT, refused.Error.Errno);
+    }
+
+    /// <summary>
+    /// Nothing here can be append-only, exclusive or temporary, and the core removes a file whose
+    /// handler gave it none of the flags the create asked for — so the refusal has to come before
+    /// the name is taken, not after it has been taken and given back.
+    /// </summary>
+    [Fact]
+    public async Task ACreateAskingForFlagsThisTreeCannotGiveIsRefused()
+    {
+        await using Served served = await Served.StartAsync();
+        await using NinePSession session = await served.ConnectAsync();
+
+        NinePFid control = await session.WalkAsync("/ctl", Token);
+
+        await using (control.ConfigureAwait(false))
+        {
+            NinePException refused = await Assert.ThrowsAsync<NinePException>(
+                async () => await control.CreateAsync(
+                    "t1",
+                    FileKind.File,
+                    FilePermissions.AllRead | FilePermissions.AllWrite,
+                    OpenMode.Write,
+                    OpenFlags.None,
+                    FileFlags.Append,
+                    Token));
+
+            Assert.Equal(Errno.EOPNOTSUPP, refused.Error.Errno);
+        }
+
+        Assert.Null(served.Registry.FindDraft("t1"));
     }
 
     [Fact]
@@ -137,8 +289,13 @@ public sealed class EndToEndTests
         Assert.Equal("first\nsecond", (await ReadAsync(session, "/cmd/t1/stdout")).Trim().ReplaceLineEndings("\n"));
     }
 
+    /// <summary>
+    /// A name this tree cannot carry is refused by the create that asked for it, because that is
+    /// the message that asked. It does not resolve on a walk either — nothing has taken it — but
+    /// answering a create with "no such file" would say nothing about why it cannot be made.
+    /// </summary>
     [Fact]
-    public async Task ANameTheTreeCannotCarryDoesNotResolve()
+    public async Task ANameTheTreeCannotCarryIsRefusedAtTheCreate()
     {
         await using Served served = await Served.StartAsync();
         await using NinePSession session = await served.ConnectAsync();
@@ -146,7 +303,7 @@ public sealed class EndToEndTests
         NinePException refused = await Assert.ThrowsAsync<NinePException>(
             async () => await RunAsync(session, ".hidden", "echo hello"));
 
-        Assert.Equal(Errno.ENOENT, refused.Error.Errno);
+        Assert.Equal(Errno.EINVAL, refused.Error.Errno);
     }
 
     [Fact]
@@ -366,8 +523,11 @@ public sealed class EndToEndTests
         await using Served served = await Served.StartAsync();
         await using NinePSession session = await served.ConnectAsync();
 
-        // Exactly what `echo … > ctl` does on a v9fs mount: O_TRUNC, which arrives as a Tsetattr
-        // setting size to zero before a byte is written.
+        // What `echo … > ctl/t1` does on a v9fs mount when the name is already there: O_TRUNC
+        // arrives as a Tsetattr setting size to zero before a byte is written. A name nobody has
+        // taken is created instead, and carries its truncation in the create.
+        await (await session.CreateFileAsync("/ctl/t1", cancellationToken: Token)).DisposeAsync();
+
         NinePFid fid = await session.OpenFileAsync("/ctl/t1", OpenMode.Write, OpenFlags.Truncate, Token);
 
         await using (fid.ConfigureAwait(false))
@@ -390,6 +550,8 @@ public sealed class EndToEndTests
     {
         await using Served served = await Served.StartAsync();
         await using NinePSession session = await served.ConnectAsync();
+
+        await (await session.CreateFileAsync("/ctl/t1", cancellationToken: Token)).DisposeAsync();
 
         Assert.Equal(0UL, (await session.GetAttrAsync("/ctl/t1", Token)).Size);
 
@@ -439,8 +601,8 @@ public sealed class EndToEndTests
         await using NinePSession first = await served.ConnectAsync();
         await using NinePSession second = await served.ConnectAsync();
 
-        NinePFid a = await first.OpenFileAsync("/ctl/p1", OpenMode.Write, OpenFlags.Truncate, Token);
-        NinePFid b = await second.OpenFileAsync("/ctl/p2", OpenMode.Write, OpenFlags.Truncate, Token);
+        NinePFid a = await first.CreateFileAsync("/ctl/p1", cancellationToken: Token);
+        NinePFid b = await second.CreateFileAsync("/ctl/p2", cancellationToken: Token);
 
         await a.WriteAsync(0, Encoding.UTF8.GetBytes("echo "), Token);
         await b.WriteAsync(0, Encoding.UTF8.GetBytes("echo "), Token);

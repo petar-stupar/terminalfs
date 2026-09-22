@@ -24,10 +24,12 @@ public sealed class CommandRegistry : IDisposable
     private const int RememberedRemovals = 64;
 
     private readonly ConcurrentDictionary<string, Command> commands = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Draft> drafts = new(StringComparer.Ordinal);
     private readonly Queue<string> recentlyRetired = new();
     private readonly Lock gate = new();
     private readonly CommandOptions options;
 
+    private long nextOrdinal;
     private uint revision;
     private DateTimeOffset changedAt;
     private bool disposed;
@@ -103,6 +105,18 @@ public sealed class CommandRegistry : IDisposable
         }
     }
 
+    /// <summary>The names taken under <c>/ctl</c> that are not commands yet, oldest first.</summary>
+    public IReadOnlyList<Draft> Drafts
+    {
+        get
+        {
+            lock (gate)
+            {
+                return [.. drafts.Values.OrderBy(draft => draft.CreatedAt).ThenBy(draft => draft.Ordinal)];
+            }
+        }
+    }
+
     /// <summary>The commands, oldest first.</summary>
     public IReadOnlyList<Command> Commands =>
         [.. commands.Values.OrderBy(command => command.CreatedAt).ThenBy(command => command.Id, StringComparer.Ordinal)];
@@ -137,15 +151,11 @@ public sealed class CommandRegistry : IDisposable
         {
             ObjectDisposedException.ThrowIf(disposed, this);
 
-            if (commands.ContainsKey(name))
-            {
-                throw new CommandException(
-                    $"'{name}' is already a command; a name runs once, so remove it or use another",
-                    CommandErrno.Exists);
-            }
+            RequireFree(name);
 
             var command = new Command(
                 name,
+                nextOrdinal++,
                 Path.Combine(OutputRoot, name),
                 options.KeepAfterExit,
                 options.TimeProvider,
@@ -181,7 +191,9 @@ public sealed class CommandRegistry : IDisposable
 
         if (text.Trim().Length == 0)
         {
-            Deny(command, text, "no command text was written before the control file was closed");
+            // A control file closed with nothing in it never reaches here — it stays a draft.
+            // This is a caller who wrote whitespace and meant it, or one driving the model.
+            Deny(command, text, "there is no command in what was written");
             return;
         }
 
@@ -192,6 +204,30 @@ public sealed class CommandRegistry : IDisposable
         }
 
         ProcessSupervisor.Spawn(command, text, Shell, WorkingDirectory, options.TimeProvider);
+        Touch();
+    }
+
+    /// <summary>
+    /// Records the bytes a draft was closed on, and commits it if there is no settle window.
+    /// </summary>
+    internal void Ready(Draft draft, string text)
+    {
+        if (draft.Ready(text))
+        {
+            Commit(draft);
+        }
+    }
+
+    /// <summary>
+    /// Records a command a rule would not let start, and commits it if there is no settle window.
+    /// </summary>
+    internal void Refuse(Draft draft, string text, string reason)
+    {
+        if (draft.Refuse(text, reason))
+        {
+            Commit(draft);
+        }
+
         Touch();
     }
 
@@ -307,10 +343,152 @@ public sealed class CommandRegistry : IDisposable
     public void Changed() => Touch();
 
     /// <summary>
-    /// Opens <c>/ctl/&lt;id&gt;</c>, taking the name for a command whose text has not arrived yet.
+    /// Takes a name under <c>/ctl</c> for a command that has not been written yet.
     /// </summary>
     /// <exception cref="CommandException">The id is not usable, or is already taken.</exception>
-    public ControlSession OpenControl(string id) => new(this, Reserve(id), options.MaxControlBytes);
+    public Draft CreateDraft(string id)
+    {
+        string name = CommandId.Require(id);
+
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            RequireFree(name);
+
+            var draft = new Draft(
+                name,
+                nextOrdinal++,
+                options.KeepAfterExit,
+                options.Settle,
+                options.TimeProvider,
+                Discard,
+                Commit);
+
+            drafts[name] = draft;
+            Touch();
+
+            return draft;
+        }
+    }
+
+    /// <summary>The draft by that name, or null.</summary>
+    public Draft? FindDraft(string id)
+    {
+        lock (gate)
+        {
+            return drafts.GetValueOrDefault(id);
+        }
+    }
+
+    /// <summary>
+    /// Opens a draft's control file.
+    /// </summary>
+    /// <param name="draft">The draft to write to.</param>
+    /// <param name="claiming">
+    /// Whether this is the open the create is entitled to, which nobody else can take.
+    /// </param>
+    /// <exception cref="CommandException">Something else is writing it, or it has been decided.</exception>
+    public ControlSession OpenControl(Draft draft, bool claiming)
+    {
+        ArgumentNullException.ThrowIfNull(draft);
+
+        if (!(claiming ? draft.TryClaimFirstOpen() : draft.TryOpen()))
+        {
+            throw new CommandException(draft.Unavailable(), CommandErrno.Exists);
+        }
+
+        return new ControlSession(this, draft, options.MaxControlBytes);
+    }
+
+    /// <summary>Gives a draft another name.</summary>
+    /// <exception cref="CommandException">
+    /// There is no draft by that name, the new name is not usable, or it is already taken.
+    /// </exception>
+    public void RenameDraft(string oldName, string newName)
+    {
+        string to = CommandId.Require(newName);
+
+        lock (gate)
+        {
+            if (!drafts.TryGetValue(oldName, out Draft? draft))
+            {
+                throw new CommandException(
+                    commands.ContainsKey(oldName)
+                        ? $"'{oldName}' has already run; a command's name is fixed once it has run"
+                        : $"there is no '{oldName}' here",
+                    commands.ContainsKey(oldName) ? CommandErrno.NotPermitted : CommandErrno.NotFound);
+            }
+
+            if (string.Equals(oldName, to, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // Never over the top of something. POSIX rename replaces what is there; here what is
+            // there is either a draft somebody else is writing or a command's whole output, and
+            // destroying either of those silently is the one thing this tree does not do.
+            RequireFree(to);
+
+            drafts.Remove(oldName);
+            draft.Rename(to);
+            drafts[to] = draft;
+            Touch();
+        }
+    }
+
+    /// <summary>Frees a name that has not run. </summary>
+    /// <exception cref="CommandException">There is no draft by that name.</exception>
+    public void RemoveDraft(string name)
+    {
+        lock (gate)
+        {
+            if (!drafts.TryGetValue(name, out Draft? draft) || !draft.Discard())
+            {
+                throw new CommandException($"there is no '{name}' here", CommandErrno.NotFound);
+            }
+
+            drafts.Remove(name);
+            Touch();
+        }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="name"/> a command now, if it is a draft that has been decided.
+    /// </summary>
+    /// <remarks>
+    /// Called by anything that would reveal whether <c>/cmd/&lt;name&gt;</c> exists. Never call
+    /// it, or its sibling below, while holding <see cref="gate"/>: committing starts a process.
+    /// </remarks>
+    public void Settle(string name)
+    {
+        Draft? draft;
+
+        lock (gate)
+        {
+            draft = drafts.GetValueOrDefault(name);
+        }
+
+        if (draft is { Decided: true })
+        {
+            Commit(draft);
+        }
+    }
+
+    /// <summary>Makes a command of every draft that has been decided.</summary>
+    public void Settle()
+    {
+        Draft[] decided;
+
+        lock (gate)
+        {
+            decided = [.. drafts.Values.Where(draft => draft.Decided)];
+        }
+
+        foreach (Draft draft in decided)
+        {
+            Commit(draft);
+        }
+    }
 
     /// <summary>Ends every command and takes the output directory with it.</summary>
     public void Dispose()
@@ -332,6 +510,20 @@ public sealed class CommandRegistry : IDisposable
 
         commands.Clear();
 
+        // A draft that had been decided is a command that never runs, even though the caller's
+        // write and its close both succeeded. That is uncomfortable and it is still right: the
+        // alternative is starting a process during shutdown and killing it in the next breath,
+        // which is what the loop above has just done to everything that was running.
+        lock (gate)
+        {
+            foreach (Draft draft in drafts.Values)
+            {
+                draft.Discard();
+            }
+
+            drafts.Clear();
+        }
+
         try
         {
             if (Directory.Exists(OutputRoot))
@@ -342,6 +534,108 @@ public sealed class CommandRegistry : IDisposable
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             Diagnostics.Report($"removing {OutputRoot}", exception);
+        }
+    }
+
+    /// <summary>
+    /// Turns a decided draft into a command and sets it going, once.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Decide under the lock, do the damage outside it, as <see cref="Expire"/> does. The whole
+    /// visible transition happens under one lock — the name stops being a draft and starts being
+    /// a command in one step — so no lookup can land in a gap where it is neither. That gap would
+    /// be the very <c>ENOENT</c> this design exists to prevent.
+    /// </para>
+    /// <para>
+    /// Starting the process happens outside the lock. <see cref="gate"/> is taken by every lookup
+    /// and every listing in the tree, and holding it across a <c>Process.Start</c> would stop the
+    /// whole server for as long as a shell takes to start — on a server whose whole job is
+    /// starting shells.
+    /// </para>
+    /// </remarks>
+    private void Commit(Draft draft)
+    {
+        Command command;
+        string text;
+        string? refusal;
+
+        lock (gate)
+        {
+            if (disposed || !draft.TryClaim(out text, out refusal))
+            {
+                return;
+            }
+
+            // Read once: a rename could otherwise move it between the dictionary and the command.
+            string name = draft.Name;
+
+            // Making the command creates its directory and opens its two output files, which is
+            // real work to do under a lock. It stays here anyway: two commits of one name racing
+            // outside it would both truncate the same stdout.
+            command = new Command(
+                name,
+                draft.Ordinal,
+                Path.Combine(OutputRoot, name),
+                options.KeepAfterExit,
+                options.TimeProvider,
+                Expire);
+
+            drafts.Remove(name);
+            commands[name] = command;
+            Touch();
+        }
+
+        if (refusal is not null)
+        {
+            Deny(command, text, refusal);
+        }
+        else
+        {
+            Start(command, text);
+        }
+    }
+
+    /// <summary>The keep timer's callback: free a name nobody wrote a command for.</summary>
+    /// <remarks>
+    /// A draft has no process to kill, no output to release and no directory to remove, so
+    /// letting one go is nothing like retiring a command. Same clock, because a name is a name;
+    /// a different callback, because there is nothing to tear down.
+    /// </remarks>
+    private void Discard(Draft draft)
+    {
+        lock (gate)
+        {
+            string name = draft.Name;
+
+            if (!drafts.TryGetValue(name, out Draft? held)
+                || !ReferenceEquals(held, draft)
+                || !draft.Discard())
+            {
+                return;
+            }
+
+            drafts.Remove(name);
+        }
+
+        Touch();
+    }
+
+    /// <summary>
+    /// Refuses a name that is already something. Callers hold <see cref="gate"/>.
+    /// </summary>
+    private void RequireFree(string name)
+    {
+        if (drafts.TryGetValue(name, out Draft? draft))
+        {
+            throw new CommandException(draft.Unavailable(), CommandErrno.Exists);
+        }
+
+        if (commands.ContainsKey(name))
+        {
+            throw new CommandException(
+                $"'{name}' is already a command; a name runs once, so remove it or use another",
+                CommandErrno.Exists);
         }
     }
 

@@ -154,25 +154,33 @@ public sealed class RenderTests : IDisposable
     /// it exists.
     /// </summary>
     [Fact]
-    public async Task AnyValidNameResolvesUnderCtlAndATakenOneIsRefusedAtTheOpen()
+    public async Task OnlyANameSomebodyHasTakenIsAFileUnderCtl()
     {
         var control = (TerminalDirectory)Registry.Root.Find("ctl")!;
 
-        Assert.NotNull(control.Find("anything"));
+        // A name nobody has taken is no file, which is what leaves a client something to create.
+        Assert.Null(control.Find("anything"));
         Assert.Null(control.Find(".hidden"));
+        Assert.Equal(["index.md"], control.Children.Select(child => child.Name));
 
-        Command command = workspace.Run("t1", "echo hello");
+        using (ControlSession session = workspace.Take("t1"))
+        {
+            // One somebody has taken is a file, and is listed: a name nobody can see is a name
+            // nobody can clean up.
+            Assert.NotNull(control.Find("t1"));
+            Assert.Equal(["index.md", "t1"], control.Children.Select(child => child.Name));
+        }
+
+        Command command = workspace.Run("t2", "echo hello");
         await Workspace.Finished(command);
 
-        var taken = (TerminalControl)control.Find("t1")!;
+        // A name that has run is not here either. It is a directory under /cmd, which is the
+        // honest answer to where it went.
+        Assert.Null(control.Find("t2"));
 
-        CommandException refused = Assert.Throws<CommandException>(() => taken.Open());
+        CommandException refused = Assert.Throws<CommandException>(() => control.Create("t2"));
 
         Assert.Equal(CommandErrno.Exists, refused.Errno);
-
-        // The listing itself holds only the index: a name here is a command nobody has written
-        // yet, and there is no list of those.
-        Assert.Equal(["index.md"], control.Children.Select(child => child.Name));
     }
 
     [Fact]
@@ -277,7 +285,8 @@ public sealed class RenderTests : IDisposable
     public async Task ADeniedCommandDirectoryHoldsOnlyWhatWasAskedWhatHappenedAndWhy()
     {
         // Refused for its shape rather than by a rule, so this needs no settings file.
-        Registry.OpenControl("t1").Close();
+        // Whitespace and not nothing: a close with no bytes in it leaves the name a draft.
+        workspace.Write("t1", " ");
 
         var commands = (TerminalDirectory)Registry.Root.Find("cmd")!;
         var directory = (TerminalDirectory)commands.Find("t1")!;
@@ -287,7 +296,7 @@ public sealed class RenderTests : IDisposable
             directory.Children.Select(child => child.Name));
 
         Assert.Equal("denied\n", await Text(directory.Find("status")!));
-        Assert.Contains("no command text", await Text(directory.Find("reason")!), StringComparison.Ordinal);
+        Assert.Contains("no command", await Text(directory.Find("reason")!), StringComparison.Ordinal);
         Assert.EndsWith("\n", await Text(directory.Find("reason")!), StringComparison.Ordinal);
 
         foreach (string absent in new[] { "pid", "exitcode", "stdout", "stderr", "wait", "kill" })

@@ -4,13 +4,14 @@ using System.Text;
 namespace TerminalFs.Core;
 
 /// <summary>
-/// One open of one command's control file, from the first byte written to the close that runs it.
+/// One open of one draft's control file, from the first byte written to the close that decides it.
 /// </summary>
 /// <remarks>
 /// <para>
-/// One command per open, not one per line. A command may be several lines — a loop, a heredoc, a
-/// script — and a line-per-command protocol could not carry one. The open is the boundary a
-/// caller already has: <c>echo … &gt; /ctl/t1</c> and a heredoc both open, write and close.
+/// One command per name, and at most one per open. A command may be several lines — a loop, a
+/// heredoc, a script — and a line-per-command protocol could not carry one. The open is the
+/// boundary a caller already has: <c>echo … &gt; /ctl/t1</c> and a heredoc both open, write and
+/// close. An open that writes nothing decides nothing and leaves the name for the next one.
 /// </para>
 /// <para>
 /// The id is the file's name rather than a word inside it, and that is what makes two callers
@@ -29,28 +30,28 @@ namespace TerminalFs.Core;
 public sealed class ControlSession : IDisposable
 {
     private readonly CommandRegistry registry;
-    private readonly Command command;
+    private readonly Draft draft;
     private readonly int maxBytes;
     private readonly ArrayBufferWriter<byte> pending = new();
 
     private bool done;
     private CommandException? refusal;
 
-    internal ControlSession(CommandRegistry registry, Command command, int maxBytes)
+    internal ControlSession(CommandRegistry registry, Draft draft, int maxBytes)
     {
         this.registry = registry;
-        this.command = command;
+        this.draft = draft;
         this.maxBytes = maxBytes;
     }
 
-    /// <summary>The command this open is writing.</summary>
-    public Command Command => command;
+    /// <summary>The name this open is writing a command for.</summary>
+    public Draft Draft => draft;
 
     /// <summary>Takes bytes written to this open.</summary>
     /// <exception cref="CommandException">
     /// What has been written cannot be run. The write fails, which is where a caller sees that
     /// something went wrong; on 9P2000.L, which is what a mount speaks, only the error number
-    /// survives, so the reason is put on the command itself, at <c>/cmd/&lt;id&gt;/reason</c>.
+    /// survives, so the reason is kept and ends up at <c>/cmd/&lt;id&gt;/reason</c>.
     /// </exception>
     public void Write(ReadOnlySpan<byte> data)
     {
@@ -70,10 +71,11 @@ public sealed class ControlSession : IDisposable
         {
             refusal = refused;
 
-            // Marked here rather than at the close so that the directory holding the reason is
-            // there the moment the write fails, which is when a caller goes looking. The text is
-            // read out before the buffer is cleared: it is what `command` reports.
-            registry.Deny(command, Encoding.UTF8.GetString(pending.WrittenSpan), refused.Message);
+            // Decided here rather than at the close, because a refusal is final the moment it is
+            // given: the caller already has the error, and nothing they write afterwards can
+            // change it. The text is read out before the buffer is cleared — it is what
+            // `command` will report.
+            registry.Refuse(draft, Encoding.UTF8.GetString(pending.WrittenSpan), refused.Message);
             pending.Clear();
 
             throw;
@@ -81,7 +83,8 @@ public sealed class ControlSession : IDisposable
     }
 
     /// <summary>
-    /// Runs what was written. Called when the open is released, however it is released.
+    /// Decides the draft on what was written. Called when the open is released, however it is
+    /// released.
     /// </summary>
     /// <remarks>
     /// A disconnected client releases its fids too, so a command whose text arrived before the
@@ -99,12 +102,27 @@ public sealed class ControlSession : IDisposable
 
         if (refusal is not null)
         {
-            // Already denied, and it keeps its name: a name given back would take the reason with
-            // it. A caller who rewords the command removes the directory, or picks another name.
+            // Decided at the write, and on its clock since then. Nothing to do here, and the
+            // draft may already have become a command while this fid was still open.
             return;
         }
 
-        registry.Start(command, Encoding.UTF8.GetString(pending.WrittenSpan));
+        // Nothing at all was written, so there is nothing to run and nothing to refuse. The name
+        // stays taken and the next open of it continues here: a client that creates a file before
+        // writing to it — which is what an agent harness's write tool does — opens, closes, opens
+        // again and writes, and the second close is the one that decides it.
+        //
+        // Zero bytes rather than nothing but whitespace. A caller who wrote a newline said
+        // something, and what they said is not a command; a caller who wrote nothing never said
+        // anything at all.
+        if (pending.WrittenCount == 0)
+        {
+            draft.EndSession();
+
+            return;
+        }
+
+        registry.Ready(draft, Encoding.UTF8.GetString(pending.WrittenSpan));
     }
 
     /// <inheritdoc />
@@ -115,7 +133,7 @@ public sealed class ControlSession : IDisposable
         if (done)
         {
             throw new CommandException(
-                "this file has already run its command; a name runs once");
+                "this file has already been closed; a name runs once");
         }
 
         if (pending.WrittenCount + data.Length > maxBytes)

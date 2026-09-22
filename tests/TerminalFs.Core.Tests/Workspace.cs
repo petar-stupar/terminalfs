@@ -14,7 +14,13 @@ internal sealed class Workspace : IDisposable
         Path.GetTempPath(),
         "terminalfs-tests-" + Guid.NewGuid().ToString("N"));
 
-    internal Workspace(CommandOptions? options = null)
+    /// <param name="options">What the registry is told to do.</param>
+    /// <param name="settle">
+    /// How long a name waits before the command written to it runs. Zero unless a test says
+    /// otherwise, because most of them are about something other than that window and a name
+    /// that runs at its close is what every one of them meant before the window existed.
+    /// </param>
+    internal Workspace(CommandOptions? options = null, TimeSpan? settle = null)
     {
         Directory.CreateDirectory(root);
 
@@ -22,6 +28,7 @@ internal sealed class Workspace : IDisposable
         {
             OutputRoot = Path.Combine(root, "out"),
             WorkingDirectory = root,
+            Settle = settle ?? TimeSpan.Zero,
         });
     }
 
@@ -37,6 +44,20 @@ internal sealed class Workspace : IDisposable
         Registry.Start(command, text);
 
         return command;
+    }
+
+    /// <summary>Takes a name and opens it, as a create followed by its open does.</summary>
+    internal ControlSession Take(string id) =>
+        Registry.OpenControl(Registry.CreateDraft(id), claiming: true);
+
+    /// <summary>Writes one command to a name and closes it, as a shell redirect does.</summary>
+    internal Draft Write(string id, string text)
+    {
+        using ControlSession session = Take(id);
+
+        session.Write(System.Text.Encoding.UTF8.GetBytes(text));
+
+        return session.Draft;
     }
 
     /// <summary>
