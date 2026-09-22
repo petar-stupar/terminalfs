@@ -8,9 +8,9 @@ namespace TerminalFs.Core.Internal.Nodes;
 /// <remarks>
 /// The size of the first render is kept for good, so a stat and a read cannot disagree; the bytes
 /// are held only weakly, so a page that was read once and walked away from is let go. This is
-/// only safe because the text is fixed — nothing in it comes from a clock or from a command — so
-/// a second render is byte-for-byte the first. Anything that moves is a
-/// <see cref="LivePage"/> instead.
+/// only safe because the text is fixed — nothing in it comes from a clock, from a command, or
+/// from anything else that can change while the server runs — so a second render is byte-for-byte
+/// the first. Anything that moves is a <see cref="LivePage"/> instead.
 /// </remarks>
 internal sealed class TextPage(string name, TerminalNodeKind kind, string key, Func<string> render)
     : TerminalPage(name, kind, key)

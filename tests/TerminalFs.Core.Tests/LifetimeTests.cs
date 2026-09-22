@@ -106,18 +106,22 @@ public sealed class LifetimeTests : IDisposable
 
         Assert.Null(Registry.Find("t1"));
 
-        using ControlSession again = Registry.OpenControl("t1");
+        using ControlSession again = workspace.Take("t1");
 
-        Assert.NotNull(Registry.Find("t1"));
+        Assert.NotNull(Registry.FindDraft("t1"));
     }
 
     /// <summary>
-    /// A command denied without a settings file or a process: closing the control file with
-    /// nothing written to it is refused for its shape rather than by a rule.
+    /// A command denied without a settings file or a process: whitespace is refused for its
+    /// shape rather than by a rule.
     /// </summary>
+    /// <remarks>
+    /// Whitespace and not nothing. A control file closed with no bytes in it decides nothing and
+    /// leaves the name a draft, which is a different thing from a command that was refused.
+    /// </remarks>
     private Command Denied(string id)
     {
-        Registry.OpenControl(id).Close();
+        workspace.Write(id, " ");
 
         return Registry.Find(id)!;
     }

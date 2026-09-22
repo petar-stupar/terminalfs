@@ -23,22 +23,24 @@ public sealed class ControlSessionTests : IDisposable
         await command.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
     /// <summary>
-    /// Opening the file is what takes the name, so two callers racing for one resolve at the
-    /// moment they collide rather than after both have written.
+    /// Making the file is what takes the name, so two callers racing for one resolve at the
+    /// moment they collide rather than after both have written. Nothing appears under
+    /// <c>/cmd</c>: there is no command yet, and a name nobody writes one for leaves nothing.
     /// </summary>
     [Fact]
-    public void TheNameIsTakenWhenTheFileIsOpened()
+    public void TheNameIsTakenWhenTheFileIsMade()
     {
-        using ControlSession session = Registry.OpenControl("t1");
+        using ControlSession session = workspace.Take("t1");
 
-        Assert.NotNull(Registry.Find("t1"));
-        Assert.Equal(CommandState.Reserved, Registry.Find("t1")!.State);
+        Assert.NotNull(Registry.FindDraft("t1"));
+        Assert.Equal("t1", session.Draft.Name);
+        Assert.Null(Registry.Find("t1"));
     }
 
     [Fact]
-    public void AnInvalidNameIsRefusedAtTheOpen()
+    public void AnInvalidNameIsRefusedAtTheCreate()
     {
-        CommandException refused = Assert.Throws<CommandException>(() => Registry.OpenControl("a/b"));
+        CommandException refused = Assert.Throws<CommandException>(() => workspace.Take("a/b"));
 
         Assert.Equal(CommandErrno.InvalidArgument, refused.Errno);
     }
@@ -50,18 +52,18 @@ public sealed class ControlSessionTests : IDisposable
     [Fact]
     public void NothingRunsBeforeClose()
     {
-        using ControlSession session = Registry.OpenControl("t1");
+        using ControlSession session = workspace.Take("t1");
 
         Write(session, "echo hello");
 
-        Assert.Equal(CommandState.Reserved, Registry.Find("t1")!.State);
-        Assert.Null(Registry.Find("t1")!.Pid);
+        Assert.Null(Registry.Find("t1"));
+        Assert.False(session.Draft.Decided);
     }
 
     [Fact]
     public async Task ClosingRunsWhatWasWritten()
     {
-        ControlSession session = Registry.OpenControl("t1");
+        ControlSession session = workspace.Take("t1");
         Write(session, "echo hello");
         session.Close();
 
@@ -74,9 +76,10 @@ public sealed class ControlSessionTests : IDisposable
     [Fact]
     public void ADuplicateNameIsRefusedWithExists()
     {
-        using ControlSession first = Registry.OpenControl("t1");
+        using ControlSession first = workspace.Take("t1");
 
-        CommandException refused = Assert.Throws<CommandException>(() => Registry.OpenControl("t1"));
+        CommandException refused = Assert.Throws<CommandException>(() => workspace.Take("t1"));
+
 
         Assert.Equal(CommandErrno.Exists, refused.Errno);
     }
@@ -84,7 +87,7 @@ public sealed class ControlSessionTests : IDisposable
     [Fact]
     public async Task ABodySplitAcrossWritesIsJoined()
     {
-        ControlSession session = Registry.OpenControl("t1");
+        ControlSession session = workspace.Take("t1");
 
         Write(session, "echo ");
         Write(session, "hello ");
@@ -106,7 +109,7 @@ public sealed class ControlSessionTests : IDisposable
     [Fact]
     public void ACharacterSplitAcrossTwoWritesSurvives()
     {
-        ControlSession session = Registry.OpenControl("t1");
+        ControlSession session = workspace.Take("t1");
 
         byte[] text = Encoding.UTF8.GetBytes("echo héllo");
 
@@ -121,7 +124,7 @@ public sealed class ControlSessionTests : IDisposable
     public void MoreThanTheLimitIsRefusedWithTooLarge()
     {
         using var small = new Workspace(new CommandOptions { MaxControlBytes = 64 });
-        using ControlSession session = small.Registry.OpenControl("t1");
+        using ControlSession session = small.Take("t1");
 
         CommandException refused = Assert.Throws<CommandException>(
             () => Write(session, new string('x', 200)));
@@ -135,19 +138,50 @@ public sealed class ControlSessionTests : IDisposable
     }
 
     /// <summary>
-    /// Nothing ran, so it is denied like any other command that never started — and the reason is
-    /// in <c>reason</c> rather than on a <c>stderr</c> that no process ever wrote to.
+    /// A close with nothing written decides nothing and keeps the name, so a client that makes a
+    /// file before it writes to it — which is what an agent harness's write tool does — can come
+    /// back and write the command. Nothing appears under <c>/cmd</c> in between.
     /// </summary>
     [Fact]
-    public void CloseWithoutABodyDeniesTheCommand()
+    public void CloseWithoutABodyKeepsTheNameAndDecidesNothing()
     {
-        ControlSession session = Registry.OpenControl("t1");
-        session.Close();
+        workspace.Take("t1").Close();
+
+        Assert.NotNull(Registry.FindDraft("t1"));
+        Assert.False(Registry.FindDraft("t1")!.Decided);
+        Assert.Null(Registry.Find("t1"));
+    }
+
+    [Fact]
+    public async Task TheCloseThatCarriesBytesIsTheOneThatRuns()
+    {
+        workspace.Take("t1").Close();
+
+        using (ControlSession again = Registry.OpenControl(Registry.FindDraft("t1")!, claiming: false))
+        {
+            Write(again, "echo hello");
+        }
+
+        Command command = Registry.Find("t1")!;
+
+        Assert.Equal(CommandState.Completed, await Finished(command));
+        Assert.Equal("hello", Workspace.Read(command.Stdout).Trim());
+    }
+
+    /// <summary>
+    /// Whitespace is not nothing. A caller who wrote a newline said something, and what they said
+    /// is not a command, so it is denied as any command that never started is — with the reason
+    /// in <c>reason</c> rather than on a <c>stderr</c> no process ever wrote to.
+    /// </summary>
+    [Fact]
+    public void AWhitespaceOnlyCommandIsDeniedRatherThanKept()
+    {
+        workspace.Write("t1", "  \n");
 
         Command command = Registry.Find("t1")!;
 
         Assert.Equal(CommandState.Denied, command.State);
-        Assert.Contains("no command text", command.Reason!, StringComparison.Ordinal);
+        Assert.Contains("no command", command.Reason!, StringComparison.Ordinal);
         Assert.Equal(["command", "status", "reason"], command.VisibleChildren);
         Assert.Equal(string.Empty, Workspace.Read(command.Stderr));
     }
@@ -156,7 +190,7 @@ public sealed class ControlSessionTests : IDisposable
     public void ADeniedCommandFailsTheWriteNamingTheRule()
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
-        using ControlSession session = denied.Registry.OpenControl("t1");
+        using ControlSession session = denied.Take("t1");
 
         CommandException refused = Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
 
@@ -173,7 +207,7 @@ public sealed class ControlSessionTests : IDisposable
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
 
-        using (ControlSession session = denied.Registry.OpenControl("t1"))
+        using (ControlSession session = denied.Take("t1"))
         {
             Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
         }
@@ -181,15 +215,15 @@ public sealed class ControlSessionTests : IDisposable
         Assert.Equal(CommandState.Denied, denied.Registry.Find("t1")!.State);
 
         CommandException taken = Assert.Throws<CommandException>(
-            () => denied.Registry.OpenControl("t1"));
+            () => denied.Take("t1"));
 
         Assert.Equal(CommandErrno.Exists, taken.Errno);
 
         denied.Registry.RemoveTree("t1");
 
-        using ControlSession again = denied.Registry.OpenControl("t1");
+        using ControlSession again = denied.Take("t1");
 
-        Assert.NotNull(denied.Registry.Find("t1"));
+        Assert.NotNull(denied.Registry.FindDraft("t1"));
     }
 
     /// <summary>
@@ -201,7 +235,7 @@ public sealed class ControlSessionTests : IDisposable
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
 
-        using (ControlSession session = denied.Registry.OpenControl("t1"))
+        using (ControlSession session = denied.Take("t1"))
         {
             Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
         }
@@ -221,7 +255,7 @@ public sealed class ControlSessionTests : IDisposable
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
 
-        using (ControlSession session = denied.Registry.OpenControl("t1"))
+        using (ControlSession session = denied.Take("t1"))
         {
             Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
         }
@@ -244,7 +278,7 @@ public sealed class ControlSessionTests : IDisposable
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
 
-        using (ControlSession session = denied.Registry.OpenControl("t1"))
+        using (ControlSession session = denied.Take("t1"))
         {
             Write(session, "cd /tmp");
 
@@ -263,11 +297,11 @@ public sealed class ControlSessionTests : IDisposable
     public void AMentionOfADeniedWordIsNotADeniedCommand()
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
-        using ControlSession session = denied.Registry.OpenControl("t1");
+        using ControlSession session = denied.Take("t1");
 
         Write(session, "echo sudo is only text");
 
-        Assert.NotNull(denied.Registry.Find("t1"));
+        Assert.False(session.Draft.Decided);
     }
 
     /// <summary>
@@ -279,7 +313,7 @@ public sealed class ControlSessionTests : IDisposable
     public void ARetriedWriteIsRefusedWithTheSameReason()
     {
         using var denied = new DeniedWorkspace("Bash(sudo:*)");
-        using ControlSession session = denied.Registry.OpenControl("t1");
+        using ControlSession session = denied.Take("t1");
 
         CommandException first = Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
         CommandException again = Assert.Throws<CommandException>(() => Write(session, "sudo ls"));
@@ -318,8 +352,8 @@ public sealed class ControlSessionTests : IDisposable
     [Fact]
     public async Task TwoOpensAtOnceRunTwoCommandsIndependently()
     {
-        ControlSession first = Registry.OpenControl("p1");
-        ControlSession second = Registry.OpenControl("p2");
+        ControlSession first = workspace.Take("p1");
+        ControlSession second = workspace.Take("p2");
 
         Write(first, "echo ");
         Write(second, "echo ");
@@ -363,12 +397,17 @@ public sealed class ControlSessionTests : IDisposable
                 OutputRoot = Path.Combine(root, "out"),
                 WorkingDirectory = root,
                 Settings = Watcher,
+                Settle = TimeSpan.Zero,
             });
         }
 
         internal CommandRegistry Registry { get; }
 
         internal SettingsWatcher Watcher { get; }
+
+        /// <summary>Takes a name and opens it, as a create followed by its open does.</summary>
+        internal ControlSession Take(string id) =>
+            Registry.OpenControl(Registry.CreateDraft(id), claiming: true);
 
         /// <summary>Reserves an id and starts it, taking the close-time path.</summary>
         internal Command Run(string id, string text)

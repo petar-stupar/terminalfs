@@ -46,12 +46,14 @@ public sealed class Command
 
     internal Command(
         string id,
+        long ordinal,
         string directory,
         TimeSpan keep,
         TimeProvider time,
         Action<Command> onExpire)
     {
         Id = id;
+        Ordinal = ordinal;
         Directory = directory;
         this.keep = keep;
         this.time = time;
@@ -68,6 +70,18 @@ public sealed class Command
 
     /// <summary>The name the caller gave it.</summary>
     public string Id { get; }
+
+    /// <summary>
+    /// What identifies this command whatever it is called, and however many have been called
+    /// that.
+    /// </summary>
+    /// <remarks>
+    /// The 9P layer derives a qid path from a key, and a qid identifies a file for as long as
+    /// that file exists. Keying on the name would hand a new <c>build</c> the qid of the
+    /// <c>build</c> that was removed before it, and a client caching on the qid would serve the
+    /// old command's output for the new one.
+    /// </remarks>
+    public long Ordinal { get; }
 
     /// <summary>Where its output files live, outside the served tree.</summary>
     public string Directory { get; }

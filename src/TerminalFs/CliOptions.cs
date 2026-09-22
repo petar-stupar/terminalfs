@@ -11,8 +11,15 @@ internal sealed record CliOptions
     /// <summary>The 9P address to listen on.</summary>
     internal string Listen { get; init; } = "";
 
-    /// <summary>Where the tree should appear on this machine.</summary>
-    internal string MountPath { get; init; } = MountSettings.DefaultMountPath;
+    /// <summary>
+    /// Where the tree should appear on this machine, or null if nobody said.
+    /// </summary>
+    /// <remarks>
+    /// Null rather than the default, because the two mean different things to the served skill:
+    /// it prints a path somebody stated and keeps a placeholder otherwise. Mounting resolves the
+    /// default itself, so <see cref="MountSettings"/> is unaffected.
+    /// </remarks>
+    internal string? MountPath { get; init; }
 
     /// <summary>Whether to mount after starting the server.</summary>
     internal bool Mount { get; init; }
@@ -41,6 +48,15 @@ internal sealed record CliOptions
     /// <summary>How long a finished command is kept after the last read of it.</summary>
     internal int KeepSeconds { get; init; } = 60;
 
+    /// <summary>
+    /// Milliseconds a name that has been written to waits before it becomes a command and runs.
+    /// </summary>
+    /// <remarks>
+    /// Milliseconds rather than seconds because both 0 and 1 of those are the wrong answer: this
+    /// is the window a rename has to arrive in, and a rename follows its close by a syscall.
+    /// </remarks>
+    internal int SettleMilliseconds { get; init; } = 250;
+
     /// <summary>How long a read of <c>wait</c> blocks before answering <c>running</c>.</summary>
     internal int WaitSeconds { get; init; } = 25;
 
@@ -66,7 +82,7 @@ internal sealed record CliOptions
     /// way back out: <c>--unmount --path ./x</c> would refuse to detach the mount it had just made.
     /// </remarks>
     internal MountSettings MountSettings => new(
-        Path.GetFullPath(MountPath),
+        Path.GetFullPath(MountPath ?? MountSettings.DefaultMountPath),
         MountSettings.StrategyFor(Docker),
         ListenPort ?? NinePPort,
         SmbPort);
@@ -78,6 +94,9 @@ internal sealed record CliOptions
 
     /// <summary>How long a finished command is kept.</summary>
     internal TimeSpan Keep => TimeSpan.FromSeconds(KeepSeconds);
+
+    /// <summary>How long a name waits before the command written to it runs.</summary>
+    internal TimeSpan Settle => TimeSpan.FromMilliseconds(SettleMilliseconds);
 
     /// <summary>How long a read of <c>wait</c> blocks.</summary>
     internal TimeSpan WaitTimeout => TimeSpan.FromSeconds(WaitSeconds);
@@ -107,6 +126,12 @@ internal sealed record CliOptions
         if (KeepSeconds is < 0 or > 86400)
         {
             throw new CliUsageException("--keep: a command is kept for between 0 and 86400 seconds");
+        }
+
+        if (SettleMilliseconds is < 0 or > 60000)
+        {
+            throw new CliUsageException(
+                "--settle: a command waits between 0 and 60000 milliseconds before it runs");
         }
 
         if (WaitSeconds is < 1 or > 3600)
@@ -209,13 +234,15 @@ internal sealed record CliOptions
                     : throw new CliUsageException($"{name}: '{text}' is not a port");
             }
 
-            int Seconds()
+            int Seconds() => Number("seconds");
+
+            int Number(string unit)
             {
                 string text = Value();
 
-                return int.TryParse(text, CultureInfo.InvariantCulture, out int seconds) && seconds >= 0
-                    ? seconds
-                    : throw new CliUsageException($"{name}: '{text}' is not a number of seconds");
+                return int.TryParse(text, CultureInfo.InvariantCulture, out int number) && number >= 0
+                    ? number
+                    : throw new CliUsageException($"{name}: '{text}' is not a number of {unit}");
             }
 
             // --init-settings takes an optional path, so it looks ahead rather than demanding one.
@@ -239,6 +266,7 @@ internal sealed record CliOptions
                     ? options with { InitSettings = true, SettingsPath = Value() }
                     : options with { InitSettings = true },
                 "--keep" => options with { KeepSeconds = Seconds() },
+                "--settle" => options with { SettleMilliseconds = Number("milliseconds") },
                 "--wait-timeout" => options with { WaitSeconds = Seconds() },
                 "--port" => options with { NinePPort = Port() },
                 "--smb-port" => options with { SmbPort = Port() },
@@ -255,13 +283,16 @@ internal sealed record CliOptions
         usage: terminalfs [--listen <url>] [--port <n>] [--shell <path>] [--cwd <dir>]
                           [--mount | --mount-docker] [--path <dir>] [--smb-port <n>]
                           [--settings <file>] [--init-settings [file]] [--keep <n>]
-                          [--wait-timeout <n>] [--unmount] [--restart-docker-container]
+                          [--wait-timeout <n>] [--settle <ms>] [--unmount]
+                          [--restart-docker-container]
 
           (no flags)                  serve the tree over 9P and print the address
           --mount                     serve, then mount it; Linux mounts 9P directly and
                                       macOS goes through a container that re-exports SMB
           --mount-docker              serve, then mount through the container everywhere
-          --path <dir>                where to mount; ~/mnt/terminalfs by default
+          --path <dir>                where to mount; ~/mnt/terminalfs by default. Stating it
+                                      is also what puts a real path into the served skill when
+                                      you mount the tree yourself
           --unmount                   unmount and remove the bridge, without serving
           --restart-docker-container  recreate the bridge container and mount again
           --listen <url>              9P address; tcp://127.0.0.1:<port> by default. This
@@ -280,6 +311,12 @@ internal sealed record CliOptions
                                       read of it, 60 by default; 0 removes it at once
           --wait-timeout <n>          seconds a read of wait blocks before answering
                                       'running', 25 by default
+          --settle <ms>               milliseconds a name that has been written to waits
+                                      before it runs, 250 by default, so that a client
+                                      which writes to a temporary name and renames it gets
+                                      its command under the name it meant. Anything that
+                                      looks under /cmd runs it at once; 0 runs it at the
+                                      close
           --log-requests              report each kind of 9P request the first time it
                                       arrives, and every kind of refusal
           --version                   print this program's version and the version of the

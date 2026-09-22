@@ -23,6 +23,14 @@ public sealed class RenderTests : IDisposable
             (await page.ContentAsync(TestContext.Current.CancellationToken)).Span);
     }
 
+    private static async Task<string> Skill(Workspace workspace)
+    {
+        var skills = (TerminalDirectory)workspace.Registry.Root.Find("skills")!;
+        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
+
+        return await Text(skill.Find("SKILL.md")!);
+    }
+
     private static IEnumerable<TerminalNode> Walk(TerminalDirectory directory)
     {
         foreach (TerminalNode child in directory.Children)
@@ -146,25 +154,33 @@ public sealed class RenderTests : IDisposable
     /// it exists.
     /// </summary>
     [Fact]
-    public async Task AnyValidNameResolvesUnderCtlAndATakenOneIsRefusedAtTheOpen()
+    public async Task OnlyANameSomebodyHasTakenIsAFileUnderCtl()
     {
         var control = (TerminalDirectory)Registry.Root.Find("ctl")!;
 
-        Assert.NotNull(control.Find("anything"));
+        // A name nobody has taken is no file, which is what leaves a client something to create.
+        Assert.Null(control.Find("anything"));
         Assert.Null(control.Find(".hidden"));
+        Assert.Equal(["index.md"], control.Children.Select(child => child.Name));
 
-        Command command = workspace.Run("t1", "echo hello");
+        using (ControlSession session = workspace.Take("t1"))
+        {
+            // One somebody has taken is a file, and is listed: a name nobody can see is a name
+            // nobody can clean up.
+            Assert.NotNull(control.Find("t1"));
+            Assert.Equal(["index.md", "t1"], control.Children.Select(child => child.Name));
+        }
+
+        Command command = workspace.Run("t2", "echo hello");
         await Workspace.Finished(command);
 
-        var taken = (TerminalControl)control.Find("t1")!;
+        // A name that has run is not here either. It is a directory under /cmd, which is the
+        // honest answer to where it went.
+        Assert.Null(control.Find("t2"));
 
-        CommandException refused = Assert.Throws<CommandException>(() => taken.Open());
+        CommandException refused = Assert.Throws<CommandException>(() => control.Create("t2"));
 
         Assert.Equal(CommandErrno.Exists, refused.Errno);
-
-        // The listing itself holds only the index: a name here is a command nobody has written
-        // yet, and there is no list of those.
-        Assert.Equal(["index.md"], control.Children.Select(child => child.Name));
     }
 
     [Fact]
@@ -192,10 +208,7 @@ public sealed class RenderTests : IDisposable
     [Fact]
     public async Task TheSkillDescribesRunningWaitingReadingAndRemoving()
     {
-        var skills = (TerminalDirectory)Registry.Root.Find("skills")!;
-        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
-
-        string text = await Text(skill.Find("SKILL.md")!);
+        string text = await Skill(workspace);
 
         Assert.StartsWith("---\nname: terminalfs\n", text, StringComparison.Ordinal);
 
@@ -209,32 +222,71 @@ public sealed class RenderTests : IDisposable
     }
 
     /// <summary>
-    /// A command directory's files answer what they are for, and a field a caller reads with
-    /// <c>cat</c> ends in a newline so it does not run into the next thing the terminal prints.
+    /// The skill is the one page meant to be copied out of the tree and followed from outside it,
+    /// so it is the one page that needs to name where the tree is. Nobody said here, so it keeps
+    /// the placeholder: a path this server guessed at would send an agent to a directory that is
+    /// not there, which is worse than one that asks to be filled in.
     /// </summary>
     [Fact]
-    public async Task EachFieldOfACommandAnswersWithATrailingNewline()
+    public async Task TheSkillKeepsItsPlaceholderWhenNobodyHasSaidWhereTheTreeIs()
     {
-        Command command = workspace.Run("t1", "echo hello");
-        await Workspace.Finished(command);
+        Assert.Contains("<mount>/ctl/build", await Skill(workspace), StringComparison.Ordinal);
 
-        var commands = (TerminalDirectory)Registry.Root.Find("cmd")!;
-        var directory = (TerminalDirectory)commands.Find("t1")!;
+        var skills = (TerminalDirectory)Registry.Root.Find("skills")!;
+        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
 
-        Assert.Equal("echo hello\n", await Text(directory.Find("command")!));
-        Assert.Equal("completed\n", await Text(directory.Find("status")!));
-        Assert.Equal("0\n", await Text(directory.Find("exitcode")!));
+        Assert.Contains(
+            "replace that with where this tree is",
+            await Text(skill.Find("index.md")!),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheSkillNamesTheMountpointWhenOneIsKnown()
+    {
+        using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs" });
+
+        string text = await Skill(mounted);
+
+        Assert.Contains("echo 'dotnet build' > /mnt/tfs/ctl/build", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("<mount>", text, StringComparison.Ordinal);
+
+        var skills = (TerminalDirectory)mounted.Registry.Root.Find("skills")!;
+        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
+
+        Assert.Contains(
+            "copy it as it is",
+            await Text(skill.Find("index.md")!),
+            StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// The three files a refused command leaves, as a caller reads them. This is the whole of the
-    /// reason channel on a mount, because the dialect one speaks carries a number and no sentence.
+    /// Only <c>&lt;mount&gt;</c> is substituted. The other angle-bracketed words are placeholders
+    /// a reader is meant to fill in themselves, and a general template pass would eat them.
     /// </summary>
+    [Fact]
+    public async Task TheSkillLeavesItsOtherPlaceholdersAlone()
+    {
+        using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs" });
+
+        Assert.Contains("/mnt/tfs/ctl/<name>", await Skill(mounted), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ATrailingSeparatorOnTheMountpointDoesNotDoubleUp()
+    {
+        using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs/" });
+
+        Assert.Contains("/mnt/tfs/ctl/build", await Skill(mounted), StringComparison.Ordinal);
+        Assert.DoesNotContain("//ctl", await Skill(mounted), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ADeniedCommandDirectoryHoldsOnlyWhatWasAskedWhatHappenedAndWhy()
     {
         // Refused for its shape rather than by a rule, so this needs no settings file.
-        Registry.OpenControl("t1").Close();
+        // Whitespace and not nothing: a close with no bytes in it leaves the name a draft.
+        workspace.Write("t1", " ");
 
         var commands = (TerminalDirectory)Registry.Root.Find("cmd")!;
         var directory = (TerminalDirectory)commands.Find("t1")!;
@@ -244,7 +296,7 @@ public sealed class RenderTests : IDisposable
             directory.Children.Select(child => child.Name));
 
         Assert.Equal("denied\n", await Text(directory.Find("status")!));
-        Assert.Contains("no command text", await Text(directory.Find("reason")!), StringComparison.Ordinal);
+        Assert.Contains("no command", await Text(directory.Find("reason")!), StringComparison.Ordinal);
         Assert.EndsWith("\n", await Text(directory.Find("reason")!), StringComparison.Ordinal);
 
         foreach (string absent in new[] { "pid", "exitcode", "stdout", "stderr", "wait", "kill" })

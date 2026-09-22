@@ -8,8 +8,9 @@ namespace TerminalFs.Internal.Server;
 /// One open of one <c>/ctl/&lt;id&gt;</c>.
 /// </summary>
 /// <remarks>
-/// The command is started when this is disposed, which the server does when the fid is clunked —
-/// including when a client disconnects without clunking.
+/// The name is decided when this is disposed, which the server does when the fid is clunked —
+/// including when a client disconnects without clunking. An open that wrote nothing decides
+/// nothing and leaves the name for the next one.
 /// </remarks>
 internal sealed class ControlChannel(ControlSession session) : IOpenFile
 {
@@ -52,7 +53,7 @@ internal sealed class ControlChannel(ControlSession session) : IOpenFile
         ValueTask.FromResult(0UL);
 
     /// <summary>
-    /// Runs what was written.
+    /// Decides the name on what was written.
     /// </summary>
     /// <remarks>
     /// 9P has no error on a clunk that a write's caller would see, so a command that cannot start
@@ -68,7 +69,7 @@ internal sealed class ControlChannel(ControlSession session) : IOpenFile
         }
         catch (CommandException refusal)
         {
-            Diagnostics.Report($"closing /ctl/{session.Command.Id}: {refusal.Message}");
+            Diagnostics.Report($"closing /ctl/{session.Draft.Name}: {refusal.Message}");
         }
 
         return ValueTask.CompletedTask;

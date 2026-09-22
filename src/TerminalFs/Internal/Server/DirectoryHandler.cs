@@ -19,6 +19,11 @@ internal sealed class DirectoryHandler(TerminalDirectory directory, TerminalTree
     /// </remarks>
     private IReadOnlyList<TerminalNode>? listing;
 
+    /// <summary>
+    /// The node this handler serves, so a rename can tell one directory from another.
+    /// </summary>
+    internal TerminalDirectory Node => directory;
+
     /// <inheritdoc />
     public Qid Qid => tree.QidOf(directory);
 
@@ -96,20 +101,83 @@ internal sealed class DirectoryHandler(TerminalDirectory directory, TerminalTree
         throw new NinePException(NinePError.FromErrno(Errno.EROFS));
 
     /// <summary>
-    /// Refuses a create. A command is made by writing to <c>/ctl</c>, not by making a directory:
-    /// an empty <c>/cmd/&lt;id&gt;</c> would have no command in it and no way to be given one.
+    /// Makes a child, which is how a name under <c>/ctl</c> is taken.
     /// </summary>
-    public ValueTask<IHandler> CreateAsync(CreateRequest request, CancellationToken cancellationToken = default) =>
-        throw new NinePException(new NinePError(
-            "a command is made by writing 'run <id> <command>' to /ctl", Errno.EPERM));
+    /// <remarks>
+    /// This is the main path to a command now: a name nobody has taken does not resolve on a
+    /// walk, so a client opening <c>/ctl/&lt;id&gt;</c> with <c>O_CREAT</c> — which every shell
+    /// redirect does — arrives here. Everywhere else in the tree refuses, because a command is
+    /// made by writing one and an empty <c>/cmd/&lt;id&gt;</c> would have no command in it and
+    /// no way to be given one.
+    /// </remarks>
+    public ValueTask<IHandler> CreateAsync(CreateRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
 
-    /// <inheritdoc />
+        // Nothing here can be append-only, exclusive or temporary, and the core reads the new
+        // file's attributes back and removes a file that lacks the flags its create asked for.
+        // Refusing now rather than letting it do that means the name is never taken and given
+        // back — a round trip in which a listing could see a name that was never real. Only a
+        // legacy Tcreate can ask; a .L mount always sends none.
+        if (request.FileFlags is not FileFlags.None)
+        {
+            throw new NinePException(NinePError.FromErrno(Errno.EOPNOTSUPP));
+        }
+
+        if (request.Kind is not FileKind.File)
+        {
+            throw new NinePException(new NinePError(
+                "a command is a file, not a directory", Errno.EPERM));
+        }
+
+        // request.Perm is ignored: a control file's mode is fixed, and the zero length that mode
+        // exists alongside is what keeps a client from merging its own cache into a command.
+        try
+        {
+            return ValueTask.FromResult(tree.HandlerFor(directory.Create(request.Name)));
+        }
+        catch (CommandException refusal)
+        {
+            throw TerminalTree.Refused(refusal);
+        }
+    }
+
+    /// <summary>
+    /// Moves a child, which is how a name being written to is given its final one.
+    /// </summary>
+    /// <remarks>
+    /// A client that writes to a temporary file and renames it into place is the reason this
+    /// exists. It is not a route to running anything — the draft it moves has not run — and a
+    /// directory that has no drafts in it refuses, which is every directory but <c>/ctl</c>.
+    /// </remarks>
     public ValueTask RenameAsync(
         string oldName,
         IDirectoryHandler newParent,
         string newName,
-        CancellationToken cancellationToken = default) =>
-        throw new NinePException(NinePError.FromErrno(Errno.EROFS));
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // The server builds a fresh handler for every walk, so reference equality on newParent
+        // says nothing at all about which directory it is. The node behind it is the directory,
+        // and the node's key is what names it.
+        if (newParent is not DirectoryHandler destination)
+        {
+            throw new NinePException(NinePError.FromErrno(Errno.EXDEV));
+        }
+
+        try
+        {
+            directory.Rename(oldName, destination.Node, newName);
+        }
+        catch (CommandException refusal)
+        {
+            throw TerminalTree.Refused(refusal);
+        }
+
+        return ValueTask.CompletedTask;
+    }
 
     /// <summary>
     /// Answers <c>Tstatfs</c>. This is not decoration: a tree that cannot say how much space it

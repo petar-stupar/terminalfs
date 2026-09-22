@@ -33,7 +33,7 @@ internal static class TreeText
             ## Layout
 
             ```text
-            /ctl/<name>             write a command here to run it
+            /ctl/<name>             write a command here to run it, and it appears below
             /cmd/<name>/command      the command, as it was written
             /cmd/<name>/pid          the process, while there is one
             /cmd/<name>/status       running, completed, error or denied
@@ -73,9 +73,22 @@ internal static class TreeText
             Each command has a file of its own rather than sharing one control file, so several
             callers can start commands at the same time.
 
-            Nothing runs until the file is closed, so a command is never half-executed. A name runs
-            **once**: writing to one that is already a command is refused until its directory is
-            removed.
+            Nothing runs until the file is closed, so a command is never half-executed, and
+            `/cmd/<name>/` does not exist until there is a command to describe — a name you take
+            and never write to leaves nothing behind. A name runs **once**: once it has run,
+            taking it again is refused until its directory is removed.
+
+            You can create the file first and write to it afterwards, and you can write to a
+            temporary name and rename it into place. Both work, because a name is only decided by
+            the close that has a command in it:
+
+            ```text
+            cp /dev/null /ctl/build.tmp        # takes the name
+            echo 'dotnet build' > /ctl/build.tmp
+            mv /ctl/build.tmp /ctl/build       # it runs as `build`
+            ```
+
+            `ls /ctl` shows the names taken but not yet run. `rm /ctl/<name>` gives one back.
 
             **If the write fails, look under `/cmd/<name>/`.** The error a mount reports is only
             a number — `Operation not permitted`, `File exists` — because that is all the protocol
@@ -101,7 +114,8 @@ internal static class TreeText
             ```
 
             A finished command is removed on its own once nothing has read it for a while, so a
-            long session does not fill up with old output.
+            long session does not fill up with old output. A name taken and never written to is
+            freed on the same clock.
 
             """);
 
@@ -153,11 +167,11 @@ internal static class TreeText
         {
             page.Append(
                 """
-                Nothing has been run yet. Write a command to `/ctl` and its directory appears
-                here:
+                Nothing has been run yet. Write a command to `/ctl/<name>` and `<name>` appears
+                here — not before, so a name taken and never written to leaves nothing:
 
                 ```text
-                echo 'run first echo hello' > /ctl
+                echo 'echo hello' > /ctl/first
                 ```
 
                 """);
@@ -220,9 +234,21 @@ internal static class TreeText
           EOF
           ```
 
-          A name runs **once**, including one that was itself refused. Writing to one that is
-          already a command is refused until its
-          directory is removed.
+          A name runs **once**, including one that was itself refused. Taking one that has
+          already run is refused until its directory is removed.
+
+          Until a command has been written and the file closed, the name is only taken: nothing
+          runs, and `/cmd/<name>/` is not there. So you may create the file and write to it later,
+          or write to a temporary name and rename it into place —
+
+          ```text
+          echo 'dotnet build' > /ctl/build.tmp
+          mv /ctl/build.tmp /ctl/build
+          ```
+
+          — and the command runs as `build`, never as `build.tmp`. `ls /ctl` lists the names
+          taken and not yet run, and `rm /ctl/<name>` gives one back. A name nobody writes a
+          command for is freed on its own after a while.
 
           Each command has a file of its own rather than sharing one control file, because a
           client merges concurrent writes to a single path: four callers writing at once reached
@@ -252,7 +278,7 @@ internal static class TreeText
           """;
 
     /// <summary>The page describing the skill, as opposed to the skill itself.</summary>
-    internal static string SkillIndex(DateTimeOffset builtAt) =>
+    internal static string SkillIndex(DateTimeOffset builtAt, string? mountPath) =>
         new Frontmatter(OkfType.Of(TerminalNodeKind.Skill))
             .Add("title", "terminalfs")
             .Add("description", "Running shell commands by writing to a file.")
@@ -262,17 +288,42 @@ internal static class TreeText
           # terminalfs
 
           [SKILL.md](SKILL.md) is the skill. Copy it into your project's skills directory —
-          `.claude/skills/terminalfs/SKILL.md` or wherever your harness looks — and replace
-          `<mount>` with where this tree is mounted. Nothing here runs from the mount.
+          `.claude/skills/terminalfs/SKILL.md` or wherever your harness looks. Nothing here runs
+          from the mount.
 
-          """;
+
+          """
+        + (mountPath is null
+            ? "The paths in it are written `<mount>`; replace that with where this tree is\nmounted.\n"
+            : "The paths in it are already the ones on this machine, so copy it as it is.\n");
 
     /// <summary>
-    /// The skill an agent harness reads. No OKF frontmatter: a skill file's frontmatter belongs
-    /// to the harness, which matches on <c>name</c> and <c>description</c>, and inventing extra
-    /// fields there would be noise.
+    /// The skill an agent harness reads, with <paramref name="mountPath"/> written into it where
+    /// it is known.
     /// </summary>
-    internal static string Skill =>
+    /// <remarks>
+    /// <para>
+    /// No OKF frontmatter: a skill file's frontmatter belongs to the harness, which matches on
+    /// <c>name</c> and <c>description</c>, and inventing extra fields there would be noise.
+    /// </para>
+    /// <para>
+    /// This is the only page that carries the mountpoint, and the only one written with a
+    /// placeholder, for the same reason: it is meant to be copied *out* of the tree and followed
+    /// from outside it. The other pages are read through the mount, where <c>/ctl/build</c> is
+    /// the right way to name a position in the tree and a reader already standing in it needs no
+    /// prefix. Do not make them match.
+    /// </para>
+    /// <para>
+    /// The substitution is <c>&lt;mount&gt;</c> and nothing else. <c>&lt;name&gt;</c> and
+    /// <c>&lt;id&gt;</c> in this text are placeholders a reader is meant to fill in themselves,
+    /// and a general template pass would eat them.
+    /// </para>
+    /// </remarks>
+    internal static string Skill(string? mountPath) => mountPath is null
+        ? SkillText
+        : SkillText.Replace("<mount>", At(mountPath), StringComparison.Ordinal);
+
+    private static string SkillText =>
         """
         ---
         name: terminalfs
@@ -297,7 +348,8 @@ internal static class TreeText
         echo 'dotnet build' > <mount>/ctl/build
         ```
 
-        Nothing runs until the file is closed, so `echo … >` is one whole command. For several
+        Nothing runs until the file is closed, so `echo … >` is one whole command, and
+        `<mount>/cmd/<name>/` does not exist until there is a command to describe. For several
         lines, use a heredoc:
 
         ```sh
@@ -308,6 +360,18 @@ internal static class TreeText
 
         Sequencing belongs **inside** one command — `a && b | c` is one command, and a name runs
         once. To run something else, use another name.
+
+        Write the file however your tools write files. Creating it first and writing to it
+        afterwards works, and so does writing to a temporary name and renaming it into place:
+
+        ```sh
+        echo 'dotnet build' > <mount>/ctl/build.tmp
+        mv <mount>/ctl/build.tmp <mount>/ctl/build   # runs as `build`, never as `build.tmp`
+        ```
+
+        A name is decided by the close that has a command in it, so until then it is only taken.
+        `ls <mount>/ctl` shows the names taken and not yet run, and `rm <mount>/ctl/<name>` gives
+        one back — though one you never write to is freed on its own after a minute.
 
         Each command is its own file, so you can start several at the same time without them
         interfering.
@@ -321,9 +385,9 @@ internal static class TreeText
         cat <mount>/cmd/build/reason    # denied by rule 'Bash(sudo:*)' in ~/.config/terminalfs/settings.json
         ```
 
-        `File exists` is the other one: the name is already a command, refused or not.
-        `ls <mount>/cmd/<name>` shows which, and `rm -r` frees the name — or use a different
-        name, which is usually quicker.
+        `File exists` is the other one: the name has already run, refused or not, or somebody
+        else is writing it. `ls <mount>/cmd/<name>` shows which, and `rm -r` frees the name — or
+        use a different name, which is usually quicker.
 
         ## Find out what happened
 
@@ -369,6 +433,18 @@ internal static class TreeText
         name: the refused one stays taken until you remove it.
 
         """;
+
+    /// <summary>
+    /// A mount path as it is written into the skill: one trailing separator taken off, so
+    /// <c>&lt;mount&gt;/ctl/build</c> cannot become <c>//ctl/build</c>.
+    /// </summary>
+    /// <remarks>
+    /// The separators themselves are left as they came. Translating them would be guessing which
+    /// side of a namespace boundary the reader is on, which is the mistake this whole substitution
+    /// exists to avoid.
+    /// </remarks>
+    private static string At(string mountPath) =>
+        mountPath.TrimEnd('/', '\\') is { Length: > 0 } trimmed ? trimmed : mountPath;
 
     private static string Count(int commands) => commands switch
     {

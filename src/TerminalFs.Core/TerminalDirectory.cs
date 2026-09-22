@@ -35,6 +35,26 @@ public abstract class TerminalDirectory : TerminalNode
         return null;
     }
 
+    /// <summary>Makes <paramref name="name"/> in this directory and answers with it.</summary>
+    /// <remarks>
+    /// A bare name and nothing else. What kind of file, what permissions and what flags a create
+    /// asked for are the protocol's vocabulary, and keeping them out of here is what lets this
+    /// project know nothing about 9P.
+    /// </remarks>
+    /// <exception cref="CommandException">Nothing can be made here, or that name cannot.</exception>
+    public virtual TerminalNode Create(string name) =>
+        throw new CommandException("nothing can be made here", CommandErrno.ReadOnly);
+
+    /// <summary>
+    /// Moves <paramref name="name"/> to <paramref name="newName"/> in
+    /// <paramref name="destination"/>.
+    /// </summary>
+    /// <exception cref="CommandException">
+    /// Nothing here can be renamed, there is no such name, or the new one is taken.
+    /// </exception>
+    public virtual void Rename(string name, TerminalDirectory destination, string newName) =>
+        throw new CommandException("nothing here can be renamed", CommandErrno.ReadOnly);
+
     /// <summary>Removes <paramref name="name"/> from this directory.</summary>
     /// <param name="name">What to remove.</param>
     /// <param name="directory">Whether the caller believes it is a directory.</param>
