@@ -34,10 +34,10 @@ internal static class TreeText
 
             ```text
             /ctl/<name>             write a command here to run it
-            /refused                why the writes that failed, failed
             /cmd/<name>/command      the command, as it was written
             /cmd/<name>/pid          the process, while there is one
-            /cmd/<name>/status       running, completed or error
+            /cmd/<name>/status       running, completed, error or denied
+            /cmd/<name>/reason       why it was refused, when it was
             /cmd/<name>/exitcode     once it has stopped
             /cmd/<name>/stdout       what it wrote, as it writes it
             /cmd/<name>/stderr       the same for standard error
@@ -77,10 +77,12 @@ internal static class TreeText
             **once**: writing to one that is already a command is refused until its directory is
             removed.
 
-            **If the write fails, read `/refused`.** The error a mount reports is only a number —
-            `Invalid argument`, `Operation not permitted` — because that is all the protocol
-            underneath it carries. The sentence saying which id was taken, or which rule refused
-            the command, is in `/refused`.
+            **If the write fails, look under `/cmd/<name>/`.** The error a mount reports is only
+            a number — `Operation not permitted`, `File exists` — because that is all the protocol
+            underneath it carries. A command refused before it ran is there anyway, with `status`
+            reading `denied` and `reason` saying why; it holds those two files and `command`, and
+            nothing else, because nothing ran. `File exists` means the name is already a command:
+            look at its directory, or pick another name.
 
             ## While it runs
 
@@ -106,7 +108,6 @@ internal static class TreeText
         page.Append("## What is here\n\n");
         page.Append("- [Running a command](ctl/index.md) — how to start one.\n");
         page.Append("- [Commands](cmd/index.md) — ").Append(Count(registry.Commands.Count)).Append(" right now.\n");
-        page.Append("- [Refused](refused) — why the writes that failed, failed.\n");
         page.Append("- [Skills](skills/index.md) — how an agent should use this tree.\n\n");
 
         page.Append("## Refusals\n\n");
@@ -119,7 +120,9 @@ internal static class TreeText
                 Some commands are refused before they run. The rules are read from
                 `{settings.Path}`, which is outside this tree and cannot be edited through it;
                 {Rules(settings.Current.Count)} in force. A refused command fails the write to
-                `/ctl` and names the rule that refused it.
+                `/ctl` and then stays: `/cmd/<name>/` holds `command`, `status` — which reads
+                `denied` — and `reason`, which names the rule. `rm -r /cmd/<name>` frees the name,
+                and it is freed on its own once nothing has read it for a while.
 
                 """);
         }
@@ -183,42 +186,10 @@ internal static class TreeText
             """
 
             Each directory holds `command`, `status`, `stdout`, `stderr` and `wait`, plus `pid` and
-            `kill` while it runs and `exitcode` once it has stopped.
+            `kill` while it runs and `exitcode` once it has stopped. One that was refused before it
+            ran holds `command`, `status` and `reason`, and nothing else.
 
             """);
-
-        return page.ToString();
-    }
-
-    /// <summary>
-    /// What <c>/refused</c> holds: why the writes that failed, failed.
-    /// </summary>
-    /// <remarks>
-    /// This file exists because of what the protocol can carry. A refusal travels as a sentence
-    /// and a number, but 9P2000.L — which a Linux mount and the SMB bridge both speak — carries
-    /// only the number, so a caller whose write failed has been told "Invalid argument" and
-    /// nothing else. The reason has to be somewhere they can go and read it, and it cannot be
-    /// <c>/ctl</c> itself: that file must report no length, or a client merges its contents into
-    /// the next command written through it.
-    /// </remarks>
-    internal static string Refused(CommandRegistry registry)
-    {
-        IReadOnlyList<(DateTimeOffset When, string Reason)> refusals = registry.Refusals;
-
-        if (refusals.Count == 0)
-        {
-            return "Nothing has been refused.\n";
-        }
-
-        var page = new StringBuilder();
-
-        foreach ((DateTimeOffset when, string reason) in refusals)
-        {
-            page.Append(when.ToString("HH:mm:ss", CultureInfo.InvariantCulture))
-                .Append("  ")
-                .Append(reason)
-                .Append('\n');
-        }
 
         return page.ToString();
     }
@@ -249,14 +220,18 @@ internal static class TreeText
           EOF
           ```
 
-          A name runs **once**. Writing to one that is already a command is refused until its
+          A name runs **once**, including one that was itself refused. Writing to one that is
+          already a command is refused until its
           directory is removed.
 
           Each command has a file of its own rather than sharing one control file, because a
           client merges concurrent writes to a single path: four callers writing at once reached
           this server as one write, and three commands were lost without an error anywhere.
 
-          If a write fails, read `/refused` — the error a mount reports is only a number.
+          If a write fails, look under `/cmd/<name>/` — the error a mount reports is only a
+          number. A command refused before it ran is there with `status` reading `denied` and
+          `reason` saying why. `File exists` means the name is already a command, and its
+          directory is why.
 
           """;
 
@@ -337,15 +312,18 @@ internal static class TreeText
         Each command is its own file, so you can start several at the same time without them
         interfering.
 
-        **If the write fails, read `<mount>/refused`.** A mount reports only an error number —
-        `Invalid argument`, `Operation not permitted` — because that is all 9P2000.L carries. The
-        sentence saying why is in that file, newest last:
+        **If the write fails, look under `<mount>/cmd/<name>/`.** A mount reports only an error
+        number — `Operation not permitted`, `File exists` — because that is all 9P2000.L carries.
+        A command refused before it ran still gets its directory:
 
         ```sh
-        cat <mount>/refused
+        cat <mount>/cmd/build/status    # denied
+        cat <mount>/cmd/build/reason    # denied by rule 'Bash(sudo:*)' in ~/.config/terminalfs/settings.json
         ```
 
-        A name already taken, and a command a rule refuses, both land there.
+        `File exists` is the other one: the name is already a command, refused or not.
+        `ls <mount>/cmd/<name>` shows which, and `rm -r` frees the name — or use a different
+        name, which is usually quicker.
 
         ## Find out what happened
 
@@ -364,7 +342,8 @@ internal static class TreeText
         fresh each time: a handle held open will not see what arrives later.
 
         `ls <mount>/cmd/<name>` answers whether it is still going without reading anything —
-        `pid` and `kill` are there while it runs, `exitcode` once it has stopped.
+        `pid` and `kill` are there while it runs, `exitcode` once it has stopped, and just
+        `command`, `status` and `reason` if it was refused before it ran.
 
         ## Stop and clear up
 
@@ -374,7 +353,8 @@ internal static class TreeText
         ```
 
         Removing a directory is worth doing when you are finished with a command; one that is
-        left is removed on its own a minute after the last read.
+        left is removed on its own a minute after the last read. A refused command is cleared up
+        the same way, and removing it is what frees its name.
 
         ## What this cannot do
 
@@ -384,7 +364,9 @@ internal static class TreeText
         Full-screen programs — an editor, a pager, a REPL — cannot run here.
 
         Some commands are refused before they run, by rules in a settings file outside this tree.
-        `<mount>/refused` names the rule that caused it.
+        A refused command is a directory holding `command`, `status` and `reason` and nothing
+        else — there is no output, because nothing ran. Reword it and write to a **different**
+        name: the refused one stays taken until you remove it.
 
         """;
 

@@ -8,6 +8,35 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-18
+
+### Changed
+
+- **A command refused before it ran keeps its name and gets its directory.** `/cmd/<name>/` holds
+  `command`, `status` — which reads `denied` — and `reason`, and nothing else: no `pid`, no
+  `exitcode`, no `stdout`, no `stderr`, no `wait` and no `kill`, because there was no process for
+  any of them to describe. The write to `/ctl/<name>` still fails, which is where a caller sees
+  that something went wrong; the directory is where they read what.
+- **Every pre-run failure ends the same way.** A rule caught at the write and a rule caught at the
+  close now produce the same thing, as do a command past `--max-bytes` and a control file closed
+  with nothing in it. The close-time refusal used to be silent — an `error` with `exitcode -1` and
+  the reason on `stderr` — so the same refusal looked like two different events depending on which
+  write it arrived on.
+- **A refused command is cleared up by the same timer as a finished one**, `--keep` seconds after
+  the last read, and `rm -r /cmd/<name>` removes it by hand. There is no second mechanism. Because
+  the name is now spent, removing the directory is also what frees it.
+
+### Removed
+
+- **`/refused` is gone.** A queue of the last eight refusals was the wrong shape for the question
+  being asked: a caller wants the reason for *their* write, and a shared log made them pick it out
+  of other people's by timestamp, could evict it before they looked, and only ever held eight. The
+  reason now belongs to the command it is about. The one refusal with nowhere to go is a name
+  already taken — there is no command of ours to write it on — and there `ls /cmd/<name>` is the
+  answer, since the directory existing is why the name was not free.
+- The served `SKILL.md` changed with it. A copy taken from `/skills/terminalfs/SKILL.md` before
+  this release tells an agent to read `/refused`, which no longer exists; take it again.
+
 ## [0.1.0] — 2026-09-16
 
 ### Added
@@ -52,5 +81,6 @@ refuses a tag whose version has no section here.
 - **`--listen` off loopback is refused, with no flag to override it.** This server runs whatever is
   written to a control file, as the user who started it; whoever can open the socket gets a shell.
 
-[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/petar-stupar/terminalfs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/petar-stupar/terminalfs/releases/tag/v0.1.0

@@ -35,6 +35,93 @@ public sealed class LifetimeTests : IDisposable
         Assert.True(command.HasExited, $"'{command.Id}' did not finish");
     }
 
+    /// <summary>
+    /// A denied command is over the moment it is denied, so the clock that clears finished
+    /// commands is the clock that clears this one. A second mechanism would be a second thing to
+    /// get wrong, and a tree that filled up with refusals nobody read would be the result.
+    /// </summary>
+    [Fact]
+    public void ADeniedCommandIsReapedByTheSameTimerAsAFinishedOne()
+    {
+        Command command = Denied("t1");
+
+        Assert.Equal(CommandState.Denied, command.State);
+
+        time.Advance(Keep);
+
+        Assert.Null(Registry.Find("t1"));
+        Assert.True(command.Retired);
+    }
+
+    /// <summary>
+    /// The reason is the whole point of keeping the directory, so a reader holding it open must
+    /// never have it taken away mid-read. The clock restarts from their close, as it does for
+    /// any other command.
+    /// </summary>
+    [Fact]
+    public void AReaderOfADeniedCommandAlwaysGetsToReadIt()
+    {
+        Command command = Denied("t1");
+
+        Command.Lease reading = command.Open();
+
+        time.Advance(Keep * 3);
+
+        Assert.NotNull(Registry.Find("t1"));
+
+        reading.Dispose();
+        time.Advance(Keep);
+
+        Assert.Null(Registry.Find("t1"));
+    }
+
+    /// <summary>
+    /// Three files are still children, so an <c>rmdir</c> on a denied command is refused for the
+    /// same reason it is on a finished one: <c>rm -r</c> unlinks them first.
+    /// </summary>
+    [Fact]
+    public void ADeniedDirectoryWithItsFilesStillInItIsNotEmpty()
+    {
+        Denied("t1");
+
+        CommandException refused = Assert.Throws<CommandException>(() => Registry.Remove("t1"));
+
+        Assert.Equal(CommandErrno.NotEmpty, refused.Errno);
+    }
+
+    /// <summary>
+    /// The way out of a refusal by hand, and what frees the name for a reworded command.
+    /// </summary>
+    [Fact]
+    public void UnlinkingTheThreeFilesOfADeniedCommandThenTheDirectoryRemovesIt()
+    {
+        Command command = Denied("t1");
+
+        foreach (string child in command.VisibleChildren.ToArray())
+        {
+            Assert.True(command.Hide(child));
+        }
+
+        Registry.Remove("t1");
+
+        Assert.Null(Registry.Find("t1"));
+
+        using ControlSession again = Registry.OpenControl("t1");
+
+        Assert.NotNull(Registry.Find("t1"));
+    }
+
+    /// <summary>
+    /// A command denied without a settings file or a process: closing the control file with
+    /// nothing written to it is refused for its shape rather than by a rule.
+    /// </summary>
+    private Command Denied(string id)
+    {
+        Registry.OpenControl(id).Close();
+
+        return Registry.Find(id)!;
+    }
+
     [Fact]
     public async Task TheRemovalTimerArmsWhenExitedWithNoOpenHandles()
     {

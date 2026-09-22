@@ -60,6 +60,10 @@ public sealed class TerminalWait : TerminalNode
         {
             CommandState.Completed => "completed",
             CommandState.Error => "error",
+
+            // Reachable: the directory exists from the moment the control file is opened, so a
+            // wait can be opened on a command that is then refused before it ever runs.
+            CommandState.Denied => "denied",
             _ => "running",
         };
 
