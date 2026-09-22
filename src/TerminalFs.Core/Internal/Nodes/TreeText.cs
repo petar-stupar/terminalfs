@@ -33,7 +33,7 @@ internal static class TreeText
             ## Layout
 
             ```text
-            /ctl/<name>             write a command here to run it
+            /ctl/<name>             write a command here to run it, and it appears below
             /cmd/<name>/command      the command, as it was written
             /cmd/<name>/pid          the process, while there is one
             /cmd/<name>/status       running, completed, error or denied
@@ -73,9 +73,22 @@ internal static class TreeText
             Each command has a file of its own rather than sharing one control file, so several
             callers can start commands at the same time.
 
-            Nothing runs until the file is closed, so a command is never half-executed. A name runs
-            **once**: writing to one that is already a command is refused until its directory is
-            removed.
+            Nothing runs until the file is closed, so a command is never half-executed, and
+            `/cmd/<name>/` does not exist until there is a command to describe — a name you take
+            and never write to leaves nothing behind. A name runs **once**: once it has run,
+            taking it again is refused until its directory is removed.
+
+            You can create the file first and write to it afterwards, and you can write to a
+            temporary name and rename it into place. Both work, because a name is only decided by
+            the close that has a command in it:
+
+            ```text
+            cp /dev/null /ctl/build.tmp        # takes the name
+            echo 'dotnet build' > /ctl/build.tmp
+            mv /ctl/build.tmp /ctl/build       # it runs as `build`
+            ```
+
+            `ls /ctl` shows the names taken but not yet run. `rm /ctl/<name>` gives one back.
 
             **If the write fails, look under `/cmd/<name>/`.** The error a mount reports is only
             a number — `Operation not permitted`, `File exists` — because that is all the protocol
@@ -101,7 +114,8 @@ internal static class TreeText
             ```
 
             A finished command is removed on its own once nothing has read it for a while, so a
-            long session does not fill up with old output.
+            long session does not fill up with old output. A name taken and never written to is
+            freed on the same clock.
 
             """);
 
@@ -153,8 +167,8 @@ internal static class TreeText
         {
             page.Append(
                 """
-                Nothing has been run yet. Write a command to `/ctl/<name>` and `<name>`
-                appears here:
+                Nothing has been run yet. Write a command to `/ctl/<name>` and `<name>` appears
+                here — not before, so a name taken and never written to leaves nothing:
 
                 ```text
                 echo 'echo hello' > /ctl/first
@@ -220,9 +234,21 @@ internal static class TreeText
           EOF
           ```
 
-          A name runs **once**, including one that was itself refused. Writing to one that is
-          already a command is refused until its
-          directory is removed.
+          A name runs **once**, including one that was itself refused. Taking one that has
+          already run is refused until its directory is removed.
+
+          Until a command has been written and the file closed, the name is only taken: nothing
+          runs, and `/cmd/<name>/` is not there. So you may create the file and write to it later,
+          or write to a temporary name and rename it into place —
+
+          ```text
+          echo 'dotnet build' > /ctl/build.tmp
+          mv /ctl/build.tmp /ctl/build
+          ```
+
+          — and the command runs as `build`, never as `build.tmp`. `ls /ctl` lists the names
+          taken and not yet run, and `rm /ctl/<name>` gives one back. A name nobody writes a
+          command for is freed on its own after a while.
 
           Each command has a file of its own rather than sharing one control file, because a
           client merges concurrent writes to a single path: four callers writing at once reached
@@ -322,7 +348,8 @@ internal static class TreeText
         echo 'dotnet build' > <mount>/ctl/build
         ```
 
-        Nothing runs until the file is closed, so `echo … >` is one whole command. For several
+        Nothing runs until the file is closed, so `echo … >` is one whole command, and
+        `<mount>/cmd/<name>/` does not exist until there is a command to describe. For several
         lines, use a heredoc:
 
         ```sh
@@ -333,6 +360,18 @@ internal static class TreeText
 
         Sequencing belongs **inside** one command — `a && b | c` is one command, and a name runs
         once. To run something else, use another name.
+
+        Write the file however your tools write files. Creating it first and writing to it
+        afterwards works, and so does writing to a temporary name and renaming it into place:
+
+        ```sh
+        echo 'dotnet build' > <mount>/ctl/build.tmp
+        mv <mount>/ctl/build.tmp <mount>/ctl/build   # runs as `build`, never as `build.tmp`
+        ```
+
+        A name is decided by the close that has a command in it, so until then it is only taken.
+        `ls <mount>/ctl` shows the names taken and not yet run, and `rm <mount>/ctl/<name>` gives
+        one back — though one you never write to is freed on its own after a minute.
 
         Each command is its own file, so you can start several at the same time without them
         interfering.
@@ -346,9 +385,9 @@ internal static class TreeText
         cat <mount>/cmd/build/reason    # denied by rule 'Bash(sudo:*)' in ~/.config/terminalfs/settings.json
         ```
 
-        `File exists` is the other one: the name is already a command, refused or not.
-        `ls <mount>/cmd/<name>` shows which, and `rm -r` frees the name — or use a different
-        name, which is usually quicker.
+        `File exists` is the other one: the name has already run, refused or not, or somebody
+        else is writing it. `ls <mount>/cmd/<name>` shows which, and `rm -r` frees the name — or
+        use a different name, which is usually quicker.
 
         ## Find out what happened
 

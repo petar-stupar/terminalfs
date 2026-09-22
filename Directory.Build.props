@@ -9,7 +9,7 @@
     <AnalysisLevel>latest-Recommended</AnalysisLevel>
     <InvariantGlobalization>true</InvariantGlobalization>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <Version>0.2.0</Version>
+    <Version>0.3.2</Version>
   </PropertyGroup>
 
   <!-- This tree runs commands. Everything a client writes to /ctl is executed by a shell with

@@ -8,7 +8,39 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-09-22
+
 ### Changed
+
+- **A name under `/ctl` is only taken until something decides it, and `/cmd/<name>/` does not
+  exist before that.** Opening a control file used to make the command's directory on the spot, so
+  every probe open, every temporary file and every read of `/ctl/<name>` left a directory behind
+  for a command that never ran. A name you take and never write to now leaves nothing, is listed
+  under `/ctl` while it is in flight, and is freed by `--keep` like a finished command. `rm
+  /ctl/<name>` gives one back by hand.
+- **Write the control file however your tools write files.** Creating it before writing to it
+  works, and so does writing to a temporary name and renaming it into place — which is what an
+  agent harness's write tool does. The command runs under the name you renamed it to, never under
+  the temporary one.
+- **A close carrying bytes no longer spawns; it decides the name, which then settles.** A client
+  that writes atomically closes its temporary file *before* it renames, so the close is the only
+  signal there is and running on it would run the command under a name nobody chose. `--settle`
+  says how long that window is, 250 milliseconds by default, and `--settle 0` runs at the close as
+  before. Nothing waits it out in practice: anything that asks about the command under `/cmd` runs
+  it at once, so `echo … > ctl/t1; cat cmd/t1/wait` is unchanged.
+- A copy of `SKILL.md` taken before this release does not know it can create a file before writing
+  to it, or rename one into place. Take it again.
+
+### Fixed
+
+- **An exclusive create of a control file always failed.** Every syntactically valid name resolved
+  on a walk, so the core never reached the create and `O_CREAT|O_EXCL` could only ever answer
+  `EEXIST` — which is how a client that writes to a temporary file first was stopped before it
+  started. A name nobody has taken is now no file, and creating it is what takes it.
+- **A reused name could inherit the removed command's qid.** `rm -r /cmd/build` followed by a new
+  `build` handed the new command the old one's identity, and a client caching on it would serve
+  the removed command's output for the new one. A command is identified by an ordinal now, not by
+  its name.
 
 - **The served `SKILL.md` names the mountpoint** when this server was told one — because it did
   the mounting, or because `--path` said where you would mount it yourself. Otherwise it keeps
@@ -94,6 +126,7 @@ refuses a tag whose version has no section here.
 - **`--listen` off loopback is refused, with no flag to override it.** This server runs whatever is
   written to a control file, as the user who started it; whoever can open the socket gets a shell.
 
-[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/petar-stupar/terminalfs/compare/v0.2.0...v0.3.2
 [0.2.0]: https://github.com/petar-stupar/terminalfs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/petar-stupar/terminalfs/releases/tag/v0.1.0
