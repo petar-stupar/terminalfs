@@ -8,6 +8,7 @@ using TerminalFs.Core;
 using TerminalFs.Core.Permissions;
 using TerminalFs.Internal.Mount;
 using TerminalFs.Internal.Server;
+using TerminalFs.Internal.Sessions;
 
 namespace TerminalFs;
 
@@ -23,7 +24,8 @@ internal static class Program
         catch (CliUsageException exception)
         {
             await Console.Error.WriteLineAsync("terminalfs: " + exception.Message).ConfigureAwait(false);
-            await Console.Error.WriteLineAsync(CliOptions.Usage).ConfigureAwait(false);
+            await Console.Error.WriteLineAsync(IsSession(args) ? SessionOptions.Usage : CliOptions.Usage)
+                .ConfigureAwait(false);
 
             return 2;
         }
@@ -56,6 +58,11 @@ internal static class Program
         // Everything recovered from goes here: a settings file that stopped parsing, a command
         // whose output could not be written, a clunk that could not carry its own error back.
         Diagnostics.To(Console.Error.WriteLine);
+
+        if (IsSession(args))
+        {
+            return await SessionAsync(SessionOptions.Parse(args[1..])).ConfigureAwait(false);
+        }
 
         CliOptions options = CliOptions.Parse(args);
 
@@ -102,7 +109,126 @@ internal static class Program
         return await ServeAsync(options).ConfigureAwait(false);
     }
 
-    private static async Task<int> ServeAsync(CliOptions options)
+    private static bool IsSession(string[] args) => args is ["session", ..];
+
+    private static async Task<int> SessionAsync(SessionOptions options)
+    {
+        if (options.Help)
+        {
+            Console.WriteLine(SessionOptions.Usage);
+
+            return 0;
+        }
+
+        SessionPaths paths = SessionPaths.Default;
+
+        // Only asked for by what starts a server. A hook that stops its session after its
+        // worktree was deleted runs in a directory that no longer exists, and asking would fail
+        // the stop and leave the server running.
+        string workingDirectory = options.Action is SessionAction.Start or SessionAction.Serve
+            ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory))
+            : string.Empty;
+
+        // And then left, whatever the action. .NET resolves a program to run against the current
+        // directory, so from one that was deleted kill, mount, umount and sudo could not be
+        // started at all; and a caller sitting in a session's tree would keep it busy. Commands
+        // run in workingDirectory, which is passed on explicitly. The root of the filesystem
+        // this binary is on, not the temporary directory: $TMPDIR can be relative, or gone
+        // along with whatever the caller was cleaning up.
+        Environment.CurrentDirectory = Path.GetPathRoot(AppContext.BaseDirectory) ?? "/";
+
+        // Starting is refused where it cannot work; stopping and collecting are not, because
+        // there is never harm in finding nothing to clear up.
+        if (options.Action is SessionAction.Start or SessionAction.Serve && !OperatingSystem.IsLinux())
+        {
+            throw new MountException(
+                "sessions are Linux-only for now. Elsewhere the tree is mounted through a container "
+                + "that serves one tree at a time; run 'terminalfs --mount' for a single shared one.");
+        }
+
+        var sessions = new Sessions(paths, new SessionHost(), Console.Error.WriteLine);
+        string id = options.Id ?? string.Empty;
+
+        switch (options.Action)
+        {
+            case SessionAction.Start:
+                // Both checked here as well as by the server, because here is where they can be
+                // said: a hook sees what start prints, and nothing of what the server logs.
+                if (!Directory.Exists(workingDirectory))
+                {
+                    throw new CliUsageException($"--cwd: {workingDirectory} is not a directory");
+                }
+
+                if (!File.Exists(Settings.DefaultPath))
+                {
+                    throw new MountException(
+                        $"{Settings.DefaultPath} does not exist, and a session's server will not start "
+                        + "without the rules that say what it may not run. Write one with sane "
+                        + "defaults by running 'terminalfs --init-settings'.");
+                }
+
+                // The path, alone, on standard output: it is what a hook hands its agent.
+                Console.WriteLine(await sessions.StartAsync(id, workingDirectory, CancellationToken.None)
+                    .ConfigureAwait(false));
+
+                return 0;
+
+            case SessionAction.Stop:
+                await sessions.StopAsync(id, CancellationToken.None).ConfigureAwait(false);
+
+                return 0;
+
+            case SessionAction.Collect:
+                Collected collected = await sessions.CollectAsync(options.OlderThan, CancellationToken.None)
+                    .ConfigureAwait(false);
+                Console.WriteLine(
+                    (collected.Stopped == 1 ? "stopped 1 session" : $"stopped {collected.Stopped} sessions")
+                    + (collected.Cleared == 0 ? string.Empty
+                        : collected.Cleared == 1 ? ", cleared up 1 leftover"
+                        : $", cleared up {collected.Cleared} leftovers"));
+
+                if (collected.Failed > 0)
+                {
+                    await Console.Error.WriteLineAsync($"terminalfs: {collected.Failed} could not be cleared up")
+                        .ConfigureAwait(false);
+                }
+
+                return collected.Failed > 0 ? 1 : 0;
+
+            default:
+                string mountPath = paths.MountPath(id);
+
+                // Start makes the same checks before launching this, but serve can be run by
+                // hand, and it is the one that has root mount over the directory.
+                SessionFiles.SecureRoot(paths.Root);
+                await Sessions.CheckMountPointAsync(new SessionHost(), mountPath, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                try
+                {
+                    return await ServeAsync(
+                        new CliOptions
+                        {
+                            Listen = "tcp://127.0.0.1:0",
+                            Mount = true,
+                            MountPath = mountPath,
+                            WorkingDirectory = workingDirectory,
+                        }.Validated(),
+                        mounted: port => SessionRecord.ForThisProcess(id, port, mountPath, workingDirectory)
+                            .Write(paths.RecordPath(id))).ConfigureAwait(false);
+                }
+                catch (CliUsageException refusal)
+                {
+                    // Nothing here was typed by anybody, so the usage text would only bury the
+                    // reason in the log start quotes from.
+                    throw new MountException(refusal.Message);
+                }
+        }
+    }
+
+    /// <param name="options">What to serve and where.</param>
+    /// <param name="mounted">Told the port once the tree is mounted, if it is.</param>
+    private static async Task<int> ServeAsync(CliOptions options, Action<int>? mounted = null)
     {
         bool mounting = options.Mount || options.RestartContainer;
         MountSettings mount = options.MountSettings;
@@ -154,12 +280,20 @@ internal static class Program
                     + $"keep={options.KeepSeconds.ToString(CultureInfo.InvariantCulture)}s");
         }
 
+        // Port 0 asks the system for a free port, and the mount has to name the one it gave.
+        if (BoundPort(server.Endpoints) is int bound)
+        {
+            mount = mount with { NinePPort = bound };
+        }
+
         // The signals are hooked before anything is mounted, not after. Mounting can run for
         // minutes — an image build, thirty polls waiting for Samba, a sudo prompt — and a Ctrl-C
         // in that window would otherwise take the default action and kill the process outright,
         // leaving the container running, a half-made mount attached, and every command this
         // server started still going with nothing watching them.
         using var shutdown = new Shutdown();
+
+        bool announced = true;
 
         if (mounting)
         {
@@ -172,10 +306,27 @@ internal static class Program
                 await Console.Error.WriteLineAsync("terminalfs: interrupted while mounting")
                     .ConfigureAwait(false);
             }
+
+            // A tree nobody was told about is one nobody will stop, so failing to say it is
+            // mounted is failing to start: it is taken down again on the way out below.
+            try
+            {
+                if (!shutdown.Token.IsCancellationRequested)
+                {
+                    mounted?.Invoke(mount.NinePPort);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                await Console.Error.WriteLineAsync($"terminalfs: mounted, but could not say so: {exception.Message}")
+                    .ConfigureAwait(false);
+                announced = false;
+            }
         }
 
-        bool faulted = !shutdown.Token.IsCancellationRequested
-            && await Task.WhenAny(serving, shutdown.Requested).ConfigureAwait(false) == serving;
+        bool faulted = !announced
+            || (!shutdown.Token.IsCancellationRequested
+                && await Task.WhenAny(serving, shutdown.Requested).ConfigureAwait(false) == serving);
 
         if (mounting)
         {
@@ -193,7 +344,7 @@ internal static class Program
         // reason exists.
         await serving.ConfigureAwait(false);
 
-        if (faulted)
+        if (faulted && announced)
         {
             await Console.Error.WriteLineAsync("terminalfs: the server stopped on its own")
                 .ConfigureAwait(false);
@@ -227,6 +378,15 @@ internal static class Program
     }
 
     private static string Rules(int count) => count == 1 ? "1 deny rule" : $"{count} deny rules";
+
+    /// <summary>The TCP port the server actually bound, or null when it is on none.</summary>
+    internal static int? BoundPort(IEnumerable<NinePAddress> endpoints) => endpoints
+        .Select(endpoint => Uri.TryCreate(endpoint.ToString(), UriKind.Absolute, out Uri? address)
+            && address.Scheme.Equals("tcp", StringComparison.OrdinalIgnoreCase)
+            && address.Port > 0
+                ? address.Port
+                : (int?)null)
+        .FirstOrDefault(port => port is not null);
 
     /// <summary>
     /// The signals that mean stop, hooked for the life of the run.

@@ -19,6 +19,7 @@ internal static class ProcessRunner
         IReadOnlyList<string> arguments,
         TimeSpan timeout,
         string? standardInput = null,
+        IReadOnlyDictionary<string, string>? environment = null,
         CancellationToken cancellationToken = default)
     {
         var start = new ProcessStartInfo(file)
@@ -28,6 +29,11 @@ internal static class ProcessRunner
             RedirectStandardInput = standardInput is not null,
             UseShellExecute = false,
         };
+
+        foreach ((string name, string value) in environment ?? new Dictionary<string, string>())
+        {
+            start.Environment[name] = value;
+        }
 
         foreach (string argument in arguments)
         {

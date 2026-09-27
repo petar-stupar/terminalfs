@@ -8,6 +8,25 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+### Added
+
+- **`terminalfs session start|stop|gc`: a tree per agent session.** One shared server cannot tell
+  which session wrote to `/ctl`; a session of its own makes that a question about the path. `start
+  --id <id> [--cwd <dir>]` runs a server on a free loopback port in the background, mounts it at
+  `<runtime-dir>/terminalfs/<id>` and prints that path, and is idempotent for the same id. `stop
+  --id <id>` stops the server, which kills its commands, unmounts, and removes the directory, and
+  is safe when nothing is there. `gc` does the same for sessions whose server is gone, including
+  the commands a killed server left running, and with `--older-than <duration>` for live sessions
+  that old. Linux only for now: the macOS bridge serves one tree at a time. Sessions need the
+  settings file, `setsid`, and root or `sudo` for `mount` and `umount`.
+
+### Fixed
+
+- **`--listen tcp://127.0.0.1:0 --mount` mounts the port the server was given.** It used to mount
+  the default port instead, where it found another server's tree or none.
+- **`--unmount` reads a mount's port whole.** A server on port 4000 recognised a mount of port
+  40001 as its own.
+
 ## [0.3.2] — 2026-09-22
 
 ### Changed

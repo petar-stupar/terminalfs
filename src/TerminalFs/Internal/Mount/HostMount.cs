@@ -6,8 +6,13 @@ namespace TerminalFs.Internal.Mount;
 /// Attaches and detaches the tree at a directory on this machine, through whichever mount command
 /// the platform has.
 /// </summary>
-internal static class HostMount
+internal static partial class HostMount
 {
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"[(,\s]port=(\d{1,5})(?=[,)\s]|$)",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex PortOption();
+
     /// <summary>Mounts the tree at <see cref="MountSettings.MountPath"/>.</summary>
     internal static async Task MountAsync(MountSettings settings, CancellationToken cancellationToken = default)
     {
@@ -210,11 +215,7 @@ internal static class HostMount
             }
 
             // A direct 9P mount: our device, our transport, our port.
-            if (device == "127.0.0.1"
-                && line.Contains("trans=tcp", StringComparison.Ordinal)
-                && line.Contains(
-                    "port=" + settings.NinePPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    StringComparison.Ordinal))
+            if (NinePPortOf(line, device) == settings.NinePPort)
             {
                 return MountStrategy.Native;
             }
@@ -223,6 +224,101 @@ internal static class HostMount
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// The mount table, one line per mount, or an exception when it cannot be read. Unlike
+    /// <see cref="IdentifyAsync"/>, which only ever says "not ours" when unsure, a caller of this
+    /// decides from the answer whether it is safe to look inside a directory.
+    /// </summary>
+    internal static async Task<string[]> ReadMountTableAsync(CancellationToken cancellationToken = default)
+    {
+        CommandResult mounts = await ProcessRunner.RunAsync(
+            "mount",
+            [],
+            TimeSpan.FromSeconds(30),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        return MountTableFrom(mounts);
+    }
+
+    /// <summary>The table <paramref name="mounts"/> printed, or why there is none.</summary>
+    internal static string[] MountTableFrom(CommandResult mounts) =>
+        mounts.Ok
+            ? mounts.Output.Split('\n')
+            : throw new MountException($"cannot read the mount table: {mounts.Reason}");
+
+    /// <summary>
+    /// The port of the direct 9P mount at exactly <paramref name="mountPath"/> in
+    /// <paramref name="lines"/>, or null when there is none. For a mount whose port nobody
+    /// recorded: a session directory is private to this user, so a loopback 9P mount there was
+    /// made by this tool.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only the parent is resolved through links, never the path itself or the points in the
+    /// table. Resolving a mount point walks into the mount, and a mount whose server has stopped
+    /// answering blocks that walk for as long as the server does — which is exactly when this is
+    /// asked, by something trying to clear that session up.
+    /// </para>
+    /// <para>
+    /// It also means a link at a session's path does not answer for whatever it points at: one
+    /// session's directory made a link to another's must not get the other unmounted.
+    /// </para>
+    /// </remarks>
+    internal static int? NinePPortAt(IEnumerable<string> lines, string mountPath)
+    {
+        string full = Path.GetFullPath(mountPath);
+        string? parent = Path.GetDirectoryName(full);
+        string real = parent is null ? full : Path.Combine(RealPath(parent), Path.GetFileName(full));
+
+        foreach (string line in lines)
+        {
+            // Normalised as a string only — no I/O — so both sides are spelled the same way.
+            string? point = MountPointOf(line) is { } listed ? Path.GetFullPath(listed) : null;
+
+            if (point is not null && (point == full || point == real))
+            {
+                return NinePPortOf(line, DeviceOf(line));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Detaches whatever is mounted at <paramref name="mountPath"/>, which the caller has already
+    /// identified as ours from the mount table. Nothing here reads through the mount, so a server
+    /// that has stopped answering does not stop its tree being taken away.
+    /// </summary>
+    internal static async Task UnmountIdentifiedAsync(string mountPath, CancellationToken cancellationToken = default)
+    {
+        CommandResult result = await Privileged(["umount", mountPath], TimeSpan.FromSeconds(60), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!result.Ok)
+        {
+            throw new MountException($"could not unmount {mountPath}: {result.Reason}");
+        }
+    }
+
+    /// <summary>
+    /// The port of a line describing a direct loopback 9P mount, read whole: a substring test for
+    /// <c>port=4000</c> also matches <c>port=40001</c>.
+    /// </summary>
+    private static int? NinePPortOf(string line, string device)
+    {
+        if (device != "127.0.0.1" || !line.Contains("trans=tcp", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        System.Text.RegularExpressions.Match port = PortOption().Match(line);
+
+        return port.Success
+            && int.TryParse(port.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            ? value
+            : null;
     }
 
     /// <summary>The device column of one line of <c>mount(8)</c>: everything before " on ".</summary>
