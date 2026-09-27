@@ -263,7 +263,8 @@ internal static partial class HostMount
 
         foreach (string line in lines)
         {
-            string? point = MountPointOf(line);
+            // Normalised as a string only — no I/O — so both sides are spelled the same way.
+            string? point = MountPointOf(line) is { } listed ? Path.GetFullPath(listed) : null;
 
             if (point is not null && (point == full || point == real))
             {

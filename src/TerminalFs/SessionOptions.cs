@@ -115,7 +115,7 @@ internal sealed record SessionOptions
 
         if (WorkingDirectory is not null && Action is not (SessionAction.Start or SessionAction.Serve))
         {
-            throw new CliUsageException($"session {action}: --cwd is for start");
+            throw new CliUsageException($"session {action}: --cwd is for start and serve");
         }
 
         if (Action == SessionAction.Collect)

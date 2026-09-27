@@ -20,6 +20,18 @@ public sealed class SessionPathsTests
     public void AnIdThatCouldLeaveTheRuntimeDirectoryIsRefused(string id) =>
         Assert.False(SessionPaths.IsValidId(id));
 
+    /// <summary>
+    /// A session's record and log sit beside its directory, so an id spelled like one of them
+    /// would make one session's directory another's record.
+    /// </summary>
+    [Theory]
+    [InlineData("abc.session")]
+    [InlineData("abc.log")]
+    [InlineData("abc.session.tmp")]
+    [InlineData("abc.LOG")]
+    public void AnIdSpelledLikeASessionsOwnFilesIsRefused(string id) =>
+        Assert.False(SessionPaths.IsValidId(id));
+
     [Fact]
     public void AnIdLongerThanTheLimitIsRefused()
     {

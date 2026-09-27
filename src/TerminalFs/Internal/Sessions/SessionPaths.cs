@@ -55,26 +55,20 @@ internal sealed record SessionPaths(string Root)
     /// </summary>
     internal string LockPath => Path.Combine(Root, ".lock");
 
-    /// <summary>The ids of every session with a record.</summary>
-    internal IEnumerable<string> RecordedIds() =>
-        Directory.Exists(Root)
-            ? Directory.EnumerateFiles(Root, "*.session")
-                .Select(Path.GetFileNameWithoutExtension)
-                .OfType<string>()
-                .Where(IsValidId)
-                .Order(StringComparer.Ordinal)
-                .ToList()
-            : [];
-
     /// <summary>
     /// Whether <paramref name="id"/> can name a session. It becomes a directory name, so it is
     /// held to the characters a command name is: nothing that could climb out of the root, hide
-    /// itself with a leading dot, or need quoting in the mount table.
+    /// itself with a leading dot, or need quoting in the mount table. Nor may it end the way a
+    /// session's own files do, or <c>abc.session</c> would be one session's directory and
+    /// another's record.
     /// </summary>
     internal static bool IsValidId(string id) =>
         id.Length is > 0 and <= MaxIdLength
         && id[0] != '.'
-        && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
+        && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.')
+        && !ReservedEndings.Any(ending => id.EndsWith(ending, StringComparison.OrdinalIgnoreCase));
+
+    private static readonly string[] ReservedEndings = [".session", ".log", ".tmp"];
 
     private static string Checked(string id) =>
         IsValidId(id) ? id : throw new ArgumentException($"'{id}' is not a session id", nameof(id));

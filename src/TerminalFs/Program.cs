@@ -168,7 +168,11 @@ internal static class Program
             case SessionAction.Collect:
                 Collected collected = await sessions.CollectAsync(options.OlderThan, CancellationToken.None)
                     .ConfigureAwait(false);
-                Console.WriteLine(collected.Stopped == 1 ? "stopped 1 session" : $"stopped {collected.Stopped} sessions");
+                Console.WriteLine(
+                    (collected.Stopped == 1 ? "stopped 1 session" : $"stopped {collected.Stopped} sessions")
+                    + (collected.Cleared == 0 ? string.Empty
+                        : collected.Cleared == 1 ? ", cleared up 1 leftover"
+                        : $", cleared up {collected.Cleared} leftovers"));
 
                 if (collected.Failed > 0)
                 {

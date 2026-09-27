@@ -13,6 +13,11 @@ internal enum EntryKind
 
     /// <summary>A symbolic link, which is never followed.</summary>
     Link,
+
+    /// <summary>
+    /// The filesystem did not say. Only the mount table can tell whether looking is safe.
+    /// </summary>
+    Unknown,
 }
 
 /// <summary>
@@ -78,12 +83,18 @@ internal static class SessionFiles
     /// What <paramref name="root"/> holds, by name, read from the directory listing alone.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Nothing in the root is stat-ed, and that is the point. A session's directory is a mount
     /// point, and stat-ing a mount point asks the server behind it; one that has stopped
     /// answering blocks the caller, uninterruptibly, for as long as it does — and clearing up
     /// such a session is exactly what these callers are for. A dead one answers with an error,
     /// which made its directory read as absent. The listing's own entry types come from the
     /// directory being listed, not from anything mounted in it.
+    /// </para>
+    /// <para>
+    /// An entry the filesystem gives no type for is <see cref="EntryKind.Unknown"/>, for the
+    /// caller to settle against the mount table before anything looks at it.
+    /// </para>
     /// </remarks>
     internal static Dictionary<string, EntryKind> List(string root)
     {
@@ -94,6 +105,24 @@ internal static class SessionFiles
             return entries;
         }
 
+        if (RawDirectory.Supported)
+        {
+            foreach ((string name, byte type) in RawDirectory.Read(root))
+            {
+                entries[name] = type switch
+                {
+                    RawDirectory.Directory => EntryKind.Directory,
+                    RawDirectory.Link => EntryKind.Link,
+                    RawDirectory.Unknown => EntryKind.Unknown,
+                    _ => EntryKind.File,
+                };
+            }
+
+            return entries;
+        }
+
+        // Elsewhere .NET's own enumeration, which is right for every entry but a link or an
+        // untyped one. Sessions are not started there, so nothing is mounted to walk into.
         foreach ((string name, bool directory) in Enumerate(root, skip: 0))
         {
             entries[name] = directory ? EntryKind.Directory : EntryKind.File;
@@ -118,6 +147,28 @@ internal static class SessionFiles
             (ref System.IO.Enumeration.FileSystemEntry entry) => (entry.FileName.ToString(), entry.IsDirectory),
             new EnumerationOptions { AttributesToSkip = skip, IgnoreInaccessible = true, RecurseSubdirectories = false }),
     ];
+
+    /// <summary>
+    /// What an entry the filesystem gave no type for is, once the caller knows nothing is mounted
+    /// on it: a link is found by reading it as one, which does not follow it, and only then is the
+    /// entry itself looked at.
+    /// </summary>
+    internal static EntryKind Settle(string path)
+    {
+        try
+        {
+            if (File.ResolveLinkTarget(path, returnFinalTarget: false) is not null)
+            {
+                return EntryKind.Link;
+            }
+        }
+        catch (IOException)
+        {
+            // Gone, or not readable as a link: what follows answers for it.
+        }
+
+        return Directory.Exists(path) ? EntryKind.Directory : EntryKind.File;
+    }
 
     /// <summary>
     /// Opens the root's lock, creating it readable by this user only.

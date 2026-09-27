@@ -39,8 +39,12 @@ internal static class ProcessTable
 
             started = process.StartTime.ToUniversalTime();
         }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        catch (Exception exception) when (exception is ArgumentException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
         {
+            // The last is the process leaving between being found and its start time being read,
+            // which is the very thing a stop polls for.
             return null;
         }
 

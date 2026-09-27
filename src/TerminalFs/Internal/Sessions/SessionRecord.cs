@@ -86,21 +86,25 @@ internal sealed record SessionRecord(
         File.Move(temporary, path, overwrite: true);
     }
 
-    /// <summary>
-    /// Whether this record can be acted on as session <paramref name="id"/>'s, mounted at
-    /// <paramref name="mountPath"/>.
-    /// </summary>
+    /// <summary>Whether this record can be acted on as session <paramref name="id"/>'s.</summary>
     /// <remarks>
-    /// Everything that stops a session signals the pid and unmounts the path this names, so a
-    /// record that parses is not enough. One from another version, one edited by hand, or one
-    /// copied from another session could otherwise send a signal to pid 0 — the caller's own
-    /// process group — or detach a mount that belongs to somebody else.
+    /// <para>
+    /// Everything that stops a session signals the pid this names, so a record that parses is
+    /// not enough. One from another version, one edited by hand, or one copied from another
+    /// session could otherwise send a signal to pid 0 — the caller's own process group.
+    /// </para>
+    /// <para>
+    /// The mount path is not compared, because nothing acts on it: the mount is always looked
+    /// for at the session's own path. It can legitimately be spelled differently — the same root
+    /// reached through a link — and a record rejected for that would leave its server running
+    /// with nothing left that could find it.
+    /// </para>
     /// </remarks>
-    internal bool Describes(string id, string mountPath) =>
+    internal bool Describes(string id) =>
         Id == id
         && Pid > 1
         && Port is > 0 and < 65536
-        && MountPath == mountPath
+        && !string.IsNullOrEmpty(MountPath)
         && !string.IsNullOrEmpty(WorkingDirectory)
         && ProcessStarted != default
         && Created != default;

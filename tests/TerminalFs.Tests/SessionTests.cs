@@ -265,7 +265,7 @@ public sealed class SessionTests : IDisposable
         Directory.CreateDirectory(paths.MountPath("forgotten"));
         host.Mounted[paths.MountPath("forgotten")] = 40124;
 
-        Assert.Equal(new Collected(0, 0), await sessions.CollectAsync(null, Token));
+        Assert.Equal(new Collected(0, 1, 0), await sessions.CollectAsync(null, Token));
 
         Assert.Empty(host.Mounted);
         Assert.False(Directory.Exists(paths.MountPath("forgotten")));
@@ -304,7 +304,7 @@ public sealed class SessionTests : IDisposable
 
         Collected collected = await sessions.CollectAsync(null, Token);
 
-        Assert.Equal(new Collected(1, 1), collected);
+        Assert.Equal(new Collected(1, 0, 1), collected);
         Assert.False(host.Mounted.ContainsKey(idle.MountPath));
         Assert.Contains(reports, line => line.Contains("could not clear up session busy", StringComparison.Ordinal));
     }
@@ -460,7 +460,7 @@ public sealed class SessionTests : IDisposable
     [InlineData("""{ "Id": "bad", "Pid": 0, "ProcessStarted": "2026-01-01T00:00:00Z", "Port": 40000, "MountPath": "MOUNT", "WorkingDirectory": "/", "Created": "2026-01-01T00:00:00Z" }""")]
     [InlineData("""{ "Id": "bad", "Pid": 1, "ProcessStarted": "2026-01-01T00:00:00Z", "Port": 40000, "MountPath": "MOUNT", "WorkingDirectory": "/", "Created": "2026-01-01T00:00:00Z" }""")]
     [InlineData("""{ "Id": "other", "Pid": 99999, "ProcessStarted": "2026-01-01T00:00:00Z", "Port": 40000, "MountPath": "MOUNT", "WorkingDirectory": "/", "Created": "2026-01-01T00:00:00Z" }""")]
-    [InlineData("""{ "Id": "bad", "Pid": 99999, "ProcessStarted": "2026-01-01T00:00:00Z", "Port": 40000, "MountPath": "/elsewhere", "WorkingDirectory": "/", "Created": "2026-01-01T00:00:00Z" }""")]
+    [InlineData("""{ "Id": "bad", "Pid": 99999, "ProcessStarted": "2026-01-01T00:00:00Z", "Port": 0, "MountPath": "MOUNT", "WorkingDirectory": "/", "Created": "2026-01-01T00:00:00Z" }""")]
     public async Task ARecordThatDoesNotDescribeItsSessionIsDiscarded(string json)
     {
         Directory.CreateDirectory(root);
@@ -469,9 +469,9 @@ public sealed class SessionTests : IDisposable
             json.Replace("MOUNT", paths.MountPath("bad"), StringComparison.Ordinal),
             Token);
 
-        Assert.Equal(new Collected(0, 0), await sessions.CollectAsync(null, Token));
+        Assert.Equal(new Collected(0, 0, 0), await sessions.CollectAsync(null, Token));
         Assert.False(File.Exists(paths.RecordPath("bad")));
-        Assert.Equal(new Collected(0, 0), await sessions.CollectAsync(null, Token));
+        Assert.Equal(new Collected(0, 0, 0), await sessions.CollectAsync(null, Token));
     }
 
     [Fact]
