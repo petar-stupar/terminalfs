@@ -227,11 +227,11 @@ internal static partial class HostMount
     }
 
     /// <summary>
-    /// The port of the direct 9P mount at exactly <paramref name="mountPath"/>, or null when there
-    /// is none. For a mount whose port nobody recorded: a session directory is private to this
-    /// user, so a loopback 9P mount there was made by this tool.
+    /// The mount table, one line per mount, or an exception when it cannot be read. Unlike
+    /// <see cref="IdentifyAsync"/>, which only ever says "not ours" when unsure, a caller of this
+    /// decides from the answer whether it is safe to look inside a directory.
     /// </summary>
-    internal static async Task<int?> NinePPortAtAsync(string mountPath, CancellationToken cancellationToken = default)
+    internal static async Task<string[]> ReadMountTableAsync(CancellationToken cancellationToken = default)
     {
         CommandResult mounts = await ProcessRunner.RunAsync(
             "mount",
@@ -239,10 +239,17 @@ internal static partial class HostMount
             TimeSpan.FromSeconds(30),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return mounts.Ok ? NinePPortAt(mounts.Output.Split('\n'), mountPath) : null;
+        return mounts.Ok
+            ? mounts.Output.Split('\n')
+            : throw new MountException($"cannot read the mount table: {mounts.Reason}");
     }
 
-    /// <summary>The same question asked of mount table lines already in hand.</summary>
+    /// <summary>
+    /// The port of the direct 9P mount at exactly <paramref name="mountPath"/> in
+    /// <paramref name="lines"/>, or null when there is none. For a mount whose port nobody
+    /// recorded: a session directory is private to this user, so a loopback 9P mount there was
+    /// made by this tool.
+    /// </summary>
     /// <remarks>
     /// <para>
     /// Only the parent is resolved through links, never the path itself or the points in the

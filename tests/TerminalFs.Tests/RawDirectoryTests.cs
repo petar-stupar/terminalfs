@@ -14,7 +14,7 @@ public sealed class RawDirectoryTests : IDisposable
     public RawDirectoryTests() => Directory.CreateDirectory(root);
 
     [Fact]
-    public void EachEntryIsNamedWithItsKindAndALinkIsNotFollowed()
+    public void EachEntryIsListedWithItsKind()
     {
         // Making a link on Windows needs a privilege CI does not have, and sessions are not
         // started there.
@@ -24,6 +24,7 @@ public sealed class RawDirectoryTests : IDisposable
         File.WriteAllText(Path.Combine(root, "tree.session"), "{}");
         Directory.CreateSymbolicLink(Path.Combine(root, "pointer"), Path.Combine(root, "tree"));
         File.CreateSymbolicLink(Path.Combine(root, "dangling"), Path.Combine(root, "nowhere"));
+        SkipWhereTheFilesystemRecordsNoTypes();
 
         Dictionary<string, EntryKind> listed = SessionFiles.List(root);
 
@@ -41,6 +42,7 @@ public sealed class RawDirectoryTests : IDisposable
 
         Directory.CreateDirectory(Path.Combine(root, "a"));
         Directory.CreateSymbolicLink(Path.Combine(root, "b"), Path.Combine(root, "a"));
+        SkipWhereTheFilesystemRecordsNoTypes();
 
         List<(string Name, byte Type)> entries = RawDirectory.Read(root);
 
@@ -49,9 +51,36 @@ public sealed class RawDirectoryTests : IDisposable
         Assert.DoesNotContain(entries, entry => entry.Name is "." or "..");
     }
 
+    /// <summary>
+    /// Where the filesystem gives no type, an entry nothing is mounted on is settled by reading
+    /// it as a link first, which does not follow it, and only then by looking at it.
+    /// </summary>
+    [Fact]
+    public void AnEntryWithNoTypeIsSettledWithoutFollowingALink()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "links need a privilege on Windows");
+
+        Directory.CreateDirectory(Path.Combine(root, "dir"));
+        File.WriteAllText(Path.Combine(root, "file"), "x");
+        Directory.CreateSymbolicLink(Path.Combine(root, "link"), Path.Combine(root, "dir"));
+
+        Assert.Equal(EntryKind.Directory, SessionFiles.Settle(Path.Combine(root, "dir")));
+        Assert.Equal(EntryKind.File, SessionFiles.Settle(Path.Combine(root, "file")));
+        Assert.Equal(EntryKind.Link, SessionFiles.Settle(Path.Combine(root, "link")));
+    }
+
     [Fact]
     public void AMissingRootListsNothing() =>
         Assert.Empty(SessionFiles.List(Path.Combine(root, "absent")));
 
     public void Dispose() => Directory.Delete(root, recursive: true);
+
+    /// <summary>
+    /// The kinds above come from the filesystem the tests run on. One that records no types
+    /// leaves them unknown, which is correct and is what the settling test covers.
+    /// </summary>
+    private void SkipWhereTheFilesystemRecordsNoTypes() =>
+        Assert.SkipWhen(
+            RawDirectory.Supported && RawDirectory.Read(root).Any(entry => entry.Type == RawDirectory.Unknown),
+            "this filesystem records no entry types");
 }

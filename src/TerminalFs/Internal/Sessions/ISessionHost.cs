@@ -14,10 +14,14 @@ internal interface ISessionHost
     System.Diagnostics.Process Launch(string id, string workingDirectory, string log);
 
     /// <summary>
-    /// The port of the loopback 9P mount at exactly <paramref name="mountPath"/>, or null when
-    /// nothing of that kind is mounted there.
+    /// Reads the mount table once, and answers from that reading: the port of the loopback 9P
+    /// mount at exactly a given path, or null when nothing of that kind is mounted there.
     /// </summary>
-    Task<int?> MountedPortAsync(string mountPath, CancellationToken cancellationToken);
+    /// <exception cref="Mount.MountException">
+    /// The table could not be read. Never read as "nothing is mounted": that answer is what
+    /// makes it safe to look inside a session's directory.
+    /// </exception>
+    Task<Func<string, int?>> ReadMountsAsync(CancellationToken cancellationToken);
 
     /// <summary>Detaches the mount at <paramref name="mountPath"/>, which serves <paramref name="port"/>.</summary>
     Task UnmountAsync(string mountPath, int port, CancellationToken cancellationToken);

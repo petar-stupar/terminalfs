@@ -24,6 +24,8 @@ refuses a tag whose version has no section here.
 
 - **`--listen tcp://127.0.0.1:0 --mount` mounts the port the server was given.** It used to mount
   the default port instead, where it found another server's tree or none.
+- **`--unmount` reads a mount's port whole.** A server on port 4000 recognised a mount of port
+  40001 as its own.
 
 ## [0.3.2] — 2026-09-22
 

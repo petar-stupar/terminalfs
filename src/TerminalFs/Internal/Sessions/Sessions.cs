@@ -72,11 +72,17 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
             throw new MountException($"{mountPath} is a link; refusing to mount over it. 'terminalfs session stop --id {id}' removes it");
         }
 
+        // Nothing here would remove it, and the server's record could not be written over it.
+        if (listed.GetValueOrDefault(id + ".session") == EntryKind.Directory)
+        {
+            throw new MountException($"{paths.RecordPath(id)} is a directory where session {id}'s record belongs; remove it");
+        }
+
         SessionRecord? existing = Recorded(id, listed);
 
         if (existing is not null
             && existing.ServerIsAlive()
-            && await host.MountedPortAsync(mountPath, cancellationToken).ConfigureAwait(false) == existing.Port)
+            && (await host.ReadMountsAsync(cancellationToken).ConfigureAwait(false))(mountPath) == existing.Port)
         {
             report($"session {id} is already mounted at {mountPath}");
 
@@ -156,7 +162,7 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
 
         Dictionary<string, EntryKind> listed = await ListAsync(cancellationToken).ConfigureAwait(false);
         bool present = ((string[])[id, id + ".session", id + ".session.tmp", id + ".log"]).Any(listed.ContainsKey)
-            || await host.MountedPortAsync(paths.MountPath(id), cancellationToken).ConfigureAwait(false) is not null;
+            || (await host.ReadMountsAsync(cancellationToken).ConfigureAwait(false))(paths.MountPath(id)) is not null;
 
         if (!present)
         {
@@ -276,9 +282,8 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
         }
 
         string mountPath = paths.MountPath(id);
-        EntryKind? kind = (await ListAsync(cancellationToken).ConfigureAwait(false)).TryGetValue(id, out EntryKind found)
-            ? found
-            : null;
+        Dictionary<string, EntryKind> listed = await ListAsync(cancellationToken).ConfigureAwait(false);
+        EntryKind? kind = listed.TryGetValue(id, out EntryKind found) ? found : null;
 
         if (kind == EntryKind.Link)
         {
@@ -287,11 +292,15 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
             report($"{mountPath} was a link, not a session's directory; removed the link");
             File.Delete(mountPath);
         }
+        else if (kind is EntryKind.File or EntryKind.Other)
+        {
+            report($"left {mountPath} in place: it is a file, not a session's directory");
+        }
         else
         {
             // The server unmounts on its way out, so this is for one that could not: killed,
             // crashed, or never recorded.
-            if (await host.MountedPortAsync(mountPath, cancellationToken).ConfigureAwait(false) is int port)
+            if ((await host.ReadMountsAsync(cancellationToken).ConfigureAwait(false))(mountPath) is int port)
             {
                 await host.UnmountAsync(mountPath, port, cancellationToken).ConfigureAwait(false);
             }
@@ -302,9 +311,14 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
             }
         }
 
-        foreach (string file in (string[])[paths.RecordPath(id), paths.RecordPath(id) + ".tmp", paths.LogPath(id)])
+        // Unlinked, never opened, and never a directory: one where a record belongs is reported
+        // by start rather than taken to be something this may delete.
+        foreach (string name in (string[])[id + ".session", id + ".session.tmp", id + ".log"])
         {
-            File.Delete(file);
+            if (listed.TryGetValue(name, out EntryKind fileKind) && fileKind != EntryKind.Directory)
+            {
+                File.Delete(Path.Combine(paths.Root, name));
+            }
         }
     }
 
@@ -429,7 +443,7 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
     /// </summary>
     internal static async Task CheckMountPointAsync(ISessionHost host, string mountPath, CancellationToken cancellationToken)
     {
-        if (await host.MountedPortAsync(mountPath, cancellationToken).ConfigureAwait(false) is not null)
+        if ((await host.ReadMountsAsync(cancellationToken).ConfigureAwait(false))(mountPath) is not null)
         {
             throw new MountException($"{mountPath} is still mounted; stop the session first");
         }
@@ -444,14 +458,22 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
     private async Task<Dictionary<string, EntryKind>> ListAsync(CancellationToken cancellationToken)
     {
         Dictionary<string, EntryKind> listed = SessionFiles.List(paths.Root);
+        List<string> unknown = [.. listed.Where(entry => entry.Value == EntryKind.Unknown).Select(entry => entry.Key)];
 
-        foreach (string name in listed.Where(entry => entry.Value == EntryKind.Unknown).Select(entry => entry.Key).ToList())
+        if (unknown.Count == 0)
+        {
+            return listed;
+        }
+
+        // One reading of the table for all of them: on a filesystem that records no types, that
+        // is every entry in the root.
+        Func<string, int?> mounted = await host.ReadMountsAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (string name in unknown)
         {
             string path = Path.Combine(paths.Root, name);
 
-            listed[name] = await host.MountedPortAsync(path, cancellationToken).ConfigureAwait(false) is not null
-                ? EntryKind.Directory
-                : SessionFiles.Settle(path);
+            listed[name] = mounted(path) is not null ? EntryKind.Directory : SessionFiles.Settle(path);
         }
 
         return listed;
@@ -481,19 +503,40 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
             return null;
         }
 
-        if (kind == EntryKind.File && SessionRecord.Read(path) is { } record && record.Describes(id))
+        if (kind == EntryKind.Directory)
+        {
+            report($"left {path} in place: a directory where session {id}'s record belongs");
+
+            return null;
+        }
+
+        // A record is never empty, and a FIFO or a device reports a length of 0. On a filesystem
+        // that records no types those arrive here as files, and opening a FIFO waits for a writer
+        // while this holds the lock everybody else is waiting on.
+        if (kind == EntryKind.File
+            && Length(path) > 0
+            && SessionRecord.Read(path) is { } record
+            && record.Describes(id))
         {
             return record;
         }
 
         report($"discarding {path}: it does not describe session {id}");
-
-        if (kind != EntryKind.Directory)
-        {
-            File.Delete(path);
-        }
+        File.Delete(path);
 
         return null;
+    }
+
+    private static long Length(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
     }
 
     /// <summary>Sessions with something in the root and no record.</summary>
@@ -503,7 +546,7 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
 
         foreach ((string name, EntryKind kind) in listed)
         {
-            string? id = kind != EntryKind.File ? name
+            string? id = kind is EntryKind.Directory or EntryKind.Link ? name
                 : name.EndsWith(".log", StringComparison.Ordinal) ? name[..^".log".Length]
                 : name.EndsWith(".session.tmp", StringComparison.Ordinal) ? name[..^".session.tmp".Length]
                 : null;

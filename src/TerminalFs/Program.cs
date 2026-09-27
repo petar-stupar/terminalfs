@@ -121,8 +121,19 @@ internal static class Program
         }
 
         SessionPaths paths = SessionPaths.Default;
-        string workingDirectory = Path.TrimEndingDirectorySeparator(
-            Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory));
+
+        // Only asked for by what starts a server. A hook that stops its session after its
+        // worktree was deleted runs in a directory that no longer exists, and asking would fail
+        // the stop and leave the server running.
+        string workingDirectory = options.Action is SessionAction.Start or SessionAction.Serve
+            ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory))
+            : string.Empty;
+
+        // And then left, whatever the action. .NET resolves a program to run against the current
+        // directory, so from one that was deleted kill, mount, umount and sudo could not be
+        // started at all; and a caller sitting in a session's tree would keep it busy. Commands
+        // run in workingDirectory, which is passed on explicitly.
+        Environment.CurrentDirectory = Path.GetTempPath();
 
         // Starting is refused where it cannot work; stopping and collecting are not, because
         // there is never harm in finding nothing to clear up.

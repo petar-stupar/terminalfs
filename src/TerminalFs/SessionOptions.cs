@@ -133,8 +133,9 @@ internal sealed record SessionOptions
         if (!SessionPaths.IsValidId(Id))
         {
             throw new CliUsageException(
-                $"--id: '{Id}' is not a session id. It becomes a directory name, so it is up to "
-                + $"{SessionPaths.MaxIdLength} letters, digits, '_', '-' and '.', not starting with '.'");
+                $"--id: '{Id}' is not a session id. It becomes a directory name beside the session's "
+                + $"record and log, so it is up to {SessionPaths.MaxIdLength} letters, digits, '_', '-' "
+                + "and '.', not starting with '.' and not ending in .session, .log or .tmp");
         }
 
         return this;
@@ -177,7 +178,8 @@ internal sealed record SessionOptions
           serve       what start runs in the background: the session's server, in the
                       foreground, until it is stopped
 
-          --id <id>                 the session: letters, digits, '_', '-' and '.'
+          --id <id>                 the session: letters, digits, '_', '-' and '.', not
+                                    ending in .session, .log or .tmp
           --cwd <dir>               the directory the session's commands run in; this
                                     one by default
           --older-than <duration>   also stop sessions this old, and their commands, even

@@ -39,7 +39,10 @@ internal sealed class SessionHost : ISessionHost
             throw new MountException("sessions need setsid, which is part of util-linux; install it and try again");
         }
 
-        var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
+        // Started in / rather than the caller's directory: its commands run in their own
+        // directory anyway, and a server sitting in the caller's would hold it busy for the life
+        // of the session.
+        var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false, WorkingDirectory = "/" };
 
         foreach (string argument in (string[])
             ["-c", Detach, "terminalfs-session", log, .. Self(), "session", "serve", "--id", id, "--cwd", workingDirectory])
@@ -52,8 +55,12 @@ internal sealed class SessionHost : ISessionHost
     }
 
     /// <inheritdoc />
-    public Task<int?> MountedPortAsync(string mountPath, CancellationToken cancellationToken) =>
-        HostMount.NinePPortAtAsync(mountPath, cancellationToken);
+    public async Task<Func<string, int?>> ReadMountsAsync(CancellationToken cancellationToken)
+    {
+        string[] lines = await HostMount.ReadMountTableAsync(cancellationToken).ConfigureAwait(false);
+
+        return mountPath => HostMount.NinePPortAt(lines, mountPath);
+    }
 
     /// <inheritdoc />
     public Task UnmountAsync(string mountPath, int port, CancellationToken cancellationToken) =>

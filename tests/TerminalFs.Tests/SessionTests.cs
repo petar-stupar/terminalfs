@@ -491,6 +491,65 @@ public sealed class SessionTests : IDisposable
         Assert.False(File.Exists(paths.RecordPath("half") + ".tmp"));
     }
 
+    /// <summary>
+    /// Opening a FIFO waits for a writer. One where a record belongs must not hold every other
+    /// session command waiting on the lock while it does.
+    /// </summary>
+    [Fact]
+    public async Task SomethingThatIsNotAFileWhereARecordBelongsIsNeverOpened()
+    {
+        Assert.SkipUnless(File.Exists("/usr/bin/mkfifo") || File.Exists("/bin/mkfifo"), "needs mkfifo");
+
+        Directory.CreateDirectory(root);
+        using (Process mkfifo = Process.Start("mkfifo", [paths.RecordPath("piped")]))
+        {
+            await mkfifo.WaitForExitAsync(Token);
+        }
+
+        Task<Collected> collecting = sessions.CollectAsync(null, Token);
+
+        Assert.Same(collecting, await Task.WhenAny(collecting, Task.Delay(TimeSpan.FromSeconds(5), Token)));
+        Assert.False(Path.Exists(paths.RecordPath("piped")));
+    }
+
+    [Fact]
+    public async Task AFileWhereASessionsDirectoryBelongsIsLeftAloneAndSaidSo()
+    {
+        Directory.CreateDirectory(root);
+        await File.WriteAllTextAsync(paths.MountPath("plain"), "somebody's", Token);
+
+        await sessions.StopAsync("plain", Token);
+
+        Assert.Equal("somebody's", await File.ReadAllTextAsync(paths.MountPath("plain"), Token));
+        Assert.Contains(reports, line => line.Contains("it is a file", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ADirectoryWhereARecordBelongsRefusesTheStartByName()
+    {
+        Directory.CreateDirectory(paths.RecordPath("odd"));
+
+        MountException refused = await Assert.ThrowsAsync<MountException>(() => sessions.StartAsync("odd", root, Token));
+
+        Assert.Contains("is a directory where session odd's record belongs", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(0, host.Launches);
+    }
+
+    /// <summary>
+    /// "Nothing is mounted" is the answer that makes it safe to look inside a session's
+    /// directory, so a mount table that could not be read never gives it.
+    /// </summary>
+    [Fact]
+    public async Task AMountTableThatCannotBeReadIsNotAnEmptyOne()
+    {
+        Running("unknowable");
+        host.TableUnreadable = true;
+
+        await Assert.ThrowsAsync<MountException>(() => sessions.StartAsync("fresh", root, Token));
+
+        Assert.Equal(0, host.Launches);
+    }
+
     [Fact]
     public async Task ASessionCommandWaitsForAnotherAndSaysSoWhenItGivesUp()
     {
@@ -637,8 +696,20 @@ public sealed class SessionTests : IDisposable
                 ?? throw new InvalidOperationException("nothing should have been launched");
         }
 
-        public Task<int?> MountedPortAsync(string mountPath, CancellationToken cancellationToken) =>
-            Task.FromResult(Mounted.TryGetValue(mountPath, out int port) ? port : (int?)null);
+        /// <summary>Whether reading the mount table fails, as it does when mount cannot be run.</summary>
+        internal bool TableUnreadable { get; set; }
+
+        public Task<Func<string, int?>> ReadMountsAsync(CancellationToken cancellationToken)
+        {
+            if (TableUnreadable)
+            {
+                throw new MountException("cannot read the mount table: mount: not found");
+            }
+
+            var snapshot = new Dictionary<string, int>(Mounted);
+
+            return Task.FromResult<Func<string, int?>>(path => snapshot.TryGetValue(path, out int port) ? port : null);
+        }
 
         /// <summary>Mounts that refuse to be unmounted, as one with somebody inside it does.</summary>
         internal HashSet<string> Busy { get; } = [];

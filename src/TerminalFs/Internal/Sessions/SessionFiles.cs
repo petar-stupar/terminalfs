@@ -5,8 +5,14 @@ namespace TerminalFs.Internal.Sessions;
 /// <summary>What an entry in the runtime directory is, as its listing says.</summary>
 internal enum EntryKind
 {
-    /// <summary>A regular file, or anything else that is not a directory.</summary>
+    /// <summary>A regular file.</summary>
     File,
+
+    /// <summary>
+    /// A FIFO, socket or device. Never opened: opening a FIFO blocks until somebody writes to
+    /// it, and nothing here should wait on anyone.
+    /// </summary>
+    Other,
 
     /// <summary>A directory: a session's mount point, mounted or not.</summary>
     Directory,
@@ -113,8 +119,9 @@ internal static class SessionFiles
                 {
                     RawDirectory.Directory => EntryKind.Directory,
                     RawDirectory.Link => EntryKind.Link,
+                    RawDirectory.Regular => EntryKind.File,
                     RawDirectory.Unknown => EntryKind.Unknown,
-                    _ => EntryKind.File,
+                    _ => EntryKind.Other,
                 };
             }
 
