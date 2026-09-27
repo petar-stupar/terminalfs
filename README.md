@@ -233,6 +233,24 @@ or a name nobody wrote to, is kept; `--wait-timeout` how long a read of `wait` b
 how long a name that has been written to waits before it runs. `--path` says where the tree goes,
 and states it for the served skill even when you mount it yourself.
 
+### A tree per session
+
+One shared tree cannot tell which agent wrote to `/ctl`. A session gets a server of its own, on a
+free loopback port, mounted at a directory named after it:
+
+```sh
+terminalfs session start --id "$SESSION_ID" --cwd "$PWD"   # prints the mount path
+terminalfs session stop --id "$SESSION_ID"
+terminalfs session gc --older-than 12h
+```
+
+`start` returns once the tree is mounted and prints only its path, under `$XDG_RUNTIME_DIR/terminalfs`
+(or `~/.cache/terminalfs`); starting a session that is already mounted prints the same path again.
+`stop` stops the server, which kills its commands, then unmounts and removes the directory, and is
+safe to run when there is nothing to stop. `gc` does the same for every session whose server is
+gone or that is older than `--older-than` (a day by default), for agents that went away without
+stopping theirs. Sessions are Linux-only for now.
+
 ### What it cannot do
 
 There is no terminal and no standard input. A command's stdin is closed at once, so anything that

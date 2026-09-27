@@ -285,8 +285,11 @@ internal sealed record CliOptions
                           [--settings <file>] [--init-settings [file]] [--keep <n>]
                           [--wait-timeout <n>] [--settle <ms>] [--unmount]
                           [--restart-docker-container]
+               terminalfs session start|stop|gc ...
 
           (no flags)                  serve the tree over 9P and print the address
+          session                     a tree per agent session, each on its own port and
+                                      mount. See terminalfs session --help
           --mount                     serve, then mount it; Linux mounts 9P directly and
                                       macOS goes through a container that re-exports SMB
           --mount-docker              serve, then mount through the container everywhere
