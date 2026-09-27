@@ -81,6 +81,33 @@ public class MountGuardTests
                 ["127.0.0.1 on /home/me/My\\040Documents/docs type 9p (rw,trans=tcp,port=15641)"],
                 Settings with { MountPath = "/home/me/My Documents/docs" }));
 
+    /// <summary>A port is read whole: a test for 1564 must not match a mount of 15641.</summary>
+    [Fact]
+    public void APortThatOursIsAPrefixOfIsNotOurs() =>
+        Assert.Null(HostMount.Identify(
+            ["127.0.0.1 on /home/me/mnt/terminalfs type 9p (rw,trans=tcp,port=156410)"],
+            Settings));
+
+    /// <summary>
+    /// A session whose record was never written is found by where it is mounted, and only a
+    /// direct loopback 9P mount there counts.
+    /// </summary>
+    [Fact]
+    public void TheLoopback9PMountAtAPathNamesItsPort()
+    {
+        string[] table =
+        [
+            "127.0.0.1 on /run/user/1000/terminalfs/a type 9p (rw,relatime,dfltuid=0,uname=root,access=any,msize=262144,trans=tcp,port=42855)",
+            "//127.0.0.1/terminalfs on /run/user/1000/terminalfs/b type cifs (rw)",
+            "C:\\ on /run/user/1000/terminalfs/c type 9p (rw,trans=fd,rfdno=4,wfdno=4)",
+        ];
+
+        Assert.Equal(42855, HostMount.NinePPortAt(table, "/run/user/1000/terminalfs/a"));
+        Assert.Null(HostMount.NinePPortAt(table, "/run/user/1000/terminalfs/b"));
+        Assert.Null(HostMount.NinePPortAt(table, "/run/user/1000/terminalfs/c"));
+        Assert.Null(HostMount.NinePPortAt(table, "/run/user/1000/terminalfs/d"));
+    }
+
     /// <summary>The device column must not be able to satisfy the mount-point test.</summary>
     [Fact]
     public void ADeviceNamedLikeOurMountPointIsNotAMatch() =>

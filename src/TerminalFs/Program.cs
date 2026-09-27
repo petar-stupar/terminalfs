@@ -138,6 +138,21 @@ internal static class Program
         switch (options.Action)
         {
             case SessionAction.Start:
+                // Both checked here as well as by the server, because here is where they can be
+                // said: a hook sees what start prints, and nothing of what the server logs.
+                if (!Directory.Exists(workingDirectory))
+                {
+                    throw new CliUsageException($"--cwd: {workingDirectory} is not a directory");
+                }
+
+                if (!File.Exists(Settings.DefaultPath))
+                {
+                    throw new MountException(
+                        $"{Settings.DefaultPath} does not exist, and a session's server will not start "
+                        + "without the rules that say what it may not run. Write one with sane "
+                        + "defaults by running 'terminalfs --init-settings'.");
+                }
+
                 // The path, alone, on standard output: it is what a hook hands its agent.
                 Console.WriteLine(await sessions.StartAsync(id, workingDirectory, CancellationToken.None)
                     .ConfigureAwait(false));
@@ -159,16 +174,25 @@ internal static class Program
             default:
                 string mountPath = paths.MountPath(id);
 
-                return await ServeAsync(
-                    new CliOptions
-                    {
-                        Listen = "tcp://127.0.0.1:0",
-                        Mount = true,
-                        MountPath = mountPath,
-                        WorkingDirectory = workingDirectory,
-                    }.Validated(),
-                    mounted: port => SessionRecord.ForThisProcess(id, port, mountPath, workingDirectory)
-                        .Write(paths.RecordPath(id))).ConfigureAwait(false);
+                try
+                {
+                    return await ServeAsync(
+                        new CliOptions
+                        {
+                            Listen = "tcp://127.0.0.1:0",
+                            Mount = true,
+                            MountPath = mountPath,
+                            WorkingDirectory = workingDirectory,
+                        }.Validated(),
+                        mounted: port => SessionRecord.ForThisProcess(id, port, mountPath, workingDirectory)
+                            .Write(paths.RecordPath(id))).ConfigureAwait(false);
+                }
+                catch (CliUsageException refusal)
+                {
+                    // Nothing here was typed by anybody, so the usage text would only bury the
+                    // reason in the log start quotes from.
+                    throw new MountException(refusal.Message);
+                }
         }
     }
 

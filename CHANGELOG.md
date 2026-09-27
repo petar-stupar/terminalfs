@@ -15,9 +15,10 @@ refuses a tag whose version has no section here.
   --id <id> [--cwd <dir>]` runs a server on a free loopback port in the background, mounts it at
   `<runtime-dir>/terminalfs/<id>` and prints that path, and is idempotent for the same id. `stop
   --id <id>` stops the server, which kills its commands, unmounts, and removes the directory, and
-  is safe when nothing is there. `gc [--older-than <duration>]` does the same for sessions whose
-  server is gone or that are older than a day, or than the age given. Linux only for now: the
-  macOS bridge serves one tree at a time.
+  is safe when nothing is there. `gc` does the same for sessions whose server is gone, including
+  the commands a killed server left running, and with `--older-than <duration>` for live sessions
+  that old. Linux only for now: the macOS bridge serves one tree at a time. Sessions need the
+  settings file, `setsid`, and root or `sudo` for `mount` and `umount`.
 
 ### Fixed
 

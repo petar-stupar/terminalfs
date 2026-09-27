@@ -71,8 +71,23 @@ public sealed class SessionOptionsTests
         Assert.Throws<CliUsageException>(() => SessionOptions.Parse(["gc", "--older-than", text]));
 
     [Fact]
-    public void CollectingDefaultsToADay() =>
-        Assert.Equal(TimeSpan.FromHours(24), SessionOptions.Parse(["gc"]).OlderThan);
+    public void CollectingStopsOnlyTheDeadUnlessGivenAnAge() =>
+        Assert.Null(SessionOptions.Parse(["gc"]).OlderThan);
+
+    /// <summary>A hook that passes a flag believes it did something, so one that would not is refused.</summary>
+    [Theory]
+    [InlineData("start", "--older-than", "5m")]
+    [InlineData("stop", "--older-than", "5m")]
+    [InlineData("stop", "--cwd", "/tmp")]
+    [InlineData("gc", "--cwd", "/tmp")]
+    public void AFlagThatDoesNothingForTheActionIsRefused(string action, string flag, string value)
+    {
+        string[] args = action == "gc" ? [action, flag, value] : [action, "--id", "a", flag, value];
+
+        CliUsageException refused = Assert.Throws<CliUsageException>(() => SessionOptions.Parse(args));
+
+        Assert.Contains(flag, refused.Message, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void TheMainCommandLineHandsSessionOverRatherThanRefusingIt() =>

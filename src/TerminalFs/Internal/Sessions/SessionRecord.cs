@@ -72,29 +72,52 @@ internal sealed record SessionRecord(
 
     /// <summary>
     /// Writes this record to <paramref name="path"/> whole, so a reader polling for it never sees
-    /// half of one.
+    /// half of one. Readable by this user only: it names the port that runs commands as them.
     /// </summary>
     internal void Write(string path)
     {
         string temporary = path + ".tmp";
 
-        File.WriteAllText(temporary, JsonSerializer.Serialize(this, Options));
+        using (FileStream stream = SessionFiles.CreatePrivate(temporary))
+        {
+            JsonSerializer.Serialize(stream, this, Options);
+        }
+
         File.Move(temporary, path, overwrite: true);
     }
 
-    /// <summary>Whether the server this record describes is still running.</summary>
-    internal bool ServerIsAlive()
-    {
-        try
-        {
-            using Process process = Process.GetProcessById(Pid);
+    /// <summary>
+    /// Whether this record can be acted on as session <paramref name="id"/>'s, mounted at
+    /// <paramref name="mountPath"/>.
+    /// </summary>
+    /// <remarks>
+    /// Everything that stops a session signals the pid and unmounts the path this names, so a
+    /// record that parses is not enough. One from another version, one edited by hand, or one
+    /// copied from another session could otherwise send a signal to pid 0 — the caller's own
+    /// process group — or detach a mount that belongs to somebody else.
+    /// </remarks>
+    internal bool Describes(string id, string mountPath) =>
+        Id == id
+        && Pid > 1
+        && Port is > 0 and < 65536
+        && MountPath == mountPath
+        && !string.IsNullOrEmpty(WorkingDirectory)
+        && ProcessStarted != default
+        && Created != default;
 
-            return !process.HasExited
-                && (process.StartTime.ToUniversalTime() - ProcessStarted).Duration() <= StartTolerance;
-        }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
-        {
-            return false;
-        }
-    }
+    /// <summary>Whether the server this record describes is still running.</summary>
+    internal bool ServerIsAlive() => ProcessTable.Find(Pid) is { Zombie: false } entry && IsServer(entry);
+
+    /// <summary>
+    /// Whether the server this record describes has gone and cannot come back: no process has its
+    /// pid, or one does and is a zombie of it. Either way, its process group holds nothing but the
+    /// commands it left behind.
+    /// </summary>
+    /// <remarks>
+    /// A pid that now belongs to a different process is neither: the record says nothing about
+    /// that process or its group, and nothing is done to them.
+    /// </remarks>
+    internal bool ServerIsGone() => ProcessTable.Find(Pid) is not { } entry || (entry.Zombie && IsServer(entry));
+
+    private bool IsServer(ProcessEntry entry) => (entry.Started - ProcessStarted).Duration() <= StartTolerance;
 }

@@ -6,8 +6,13 @@ namespace TerminalFs.Internal.Mount;
 /// Attaches and detaches the tree at a directory on this machine, through whichever mount command
 /// the platform has.
 /// </summary>
-internal static class HostMount
+internal static partial class HostMount
 {
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"[(,\s]port=(\d{1,5})(?=[,)\s]|$)",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+    private static partial System.Text.RegularExpressions.Regex PortOption();
+
     /// <summary>Mounts the tree at <see cref="MountSettings.MountPath"/>.</summary>
     internal static async Task MountAsync(MountSettings settings, CancellationToken cancellationToken = default)
     {
@@ -210,11 +215,7 @@ internal static class HostMount
             }
 
             // A direct 9P mount: our device, our transport, our port.
-            if (device == "127.0.0.1"
-                && line.Contains("trans=tcp", StringComparison.Ordinal)
-                && line.Contains(
-                    "port=" + settings.NinePPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    StringComparison.Ordinal))
+            if (NinePPortOf(line, device) == settings.NinePPort)
             {
                 return MountStrategy.Native;
             }
@@ -223,6 +224,60 @@ internal static class HostMount
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// The port of the direct 9P mount at exactly <paramref name="mountPath"/>, or null when there
+    /// is none. For a mount whose port nobody recorded: a session directory is private to this
+    /// user, so a loopback 9P mount there was made by this tool.
+    /// </summary>
+    internal static async Task<int?> NinePPortAtAsync(string mountPath, CancellationToken cancellationToken = default)
+    {
+        CommandResult mounts = await ProcessRunner.RunAsync(
+            "mount",
+            [],
+            TimeSpan.FromSeconds(30),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        return mounts.Ok ? NinePPortAt(mounts.Output.Split('\n'), mountPath) : null;
+    }
+
+    /// <summary>The same question asked of mount table lines already in hand.</summary>
+    internal static int? NinePPortAt(IEnumerable<string> lines, string mountPath)
+    {
+        string full = Path.GetFullPath(mountPath);
+        string real = RealPath(full);
+
+        foreach (string line in lines)
+        {
+            string? point = MountPointOf(line);
+
+            if (point is not null && (point == full || point == real || RealPath(point) == real))
+            {
+                return NinePPortOf(line, DeviceOf(line));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The port of a line describing a direct loopback 9P mount, read whole: a substring test for
+    /// <c>port=4000</c> also matches <c>port=40001</c>.
+    /// </summary>
+    private static int? NinePPortOf(string line, string device)
+    {
+        if (device != "127.0.0.1" || !line.Contains("trans=tcp", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        System.Text.RegularExpressions.Match port = PortOption().Match(line);
+
+        return port.Success
+            && int.TryParse(port.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture, out int value)
+            ? value
+            : null;
     }
 
     /// <summary>The device column of one line of <c>mount(8)</c>: everything before " on ".</summary>

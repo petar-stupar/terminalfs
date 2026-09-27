@@ -7,33 +7,42 @@ namespace TerminalFs.Internal.Sessions;
 internal sealed class SessionHost : ISessionHost
 {
     /// <summary>
-    /// Runs the command it is given with no terminal and its output appended to a log, in a
-    /// session of its own when <c>setsid</c> is there to make one.
+    /// Runs the command it is given in a session of its own, with no terminal and its output
+    /// appended to a log.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The redirection is done by a shell rather than by this process because the server has to
     /// outlive it: a pipe back to here would break the moment <c>start</c> returned. The shell
     /// also closes the caller's standard output before the server runs, which matters when the
     /// caller is an agent's hook — a harness waits for that pipe to close, and a server holding
     /// it would hang the hook for the life of the session.
+    /// </para>
+    /// <para>
+    /// <c>setsid</c> is required, not a nicety. Its own session puts the server out of reach of a
+    /// harness that kills the hook's process group, and makes the server's pid the group of
+    /// every command it starts — which is how a stop finds the commands of a server that was
+    /// killed. The shell is not a group leader, so <c>setsid</c> does not fork and the pid this
+    /// returns is the server's.
+    /// </para>
     /// </remarks>
     private const string Detach = """
         log=$1; shift
-        if command -v setsid >/dev/null 2>&1; then set -- setsid "$@"; fi
-        exec "$@" </dev/null >>"$log" 2>&1
+        exec setsid "$@" </dev/null >>"$log" 2>&1
         """;
 
     /// <inheritdoc />
     public Process Launch(string id, string workingDirectory, string log)
     {
-        var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
-
-        foreach (string argument in (string[])["-c", Detach, "terminalfs-session", log, .. Self()])
+        if (!ProcessRunner.Exists("setsid"))
         {
-            start.ArgumentList.Add(argument);
+            throw new MountException("sessions need setsid, which is part of util-linux; install it and try again");
         }
 
-        foreach (string argument in (string[])["session", "serve", "--id", id, "--cwd", workingDirectory])
+        var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
+
+        foreach (string argument in (string[])
+            ["-c", Detach, "terminalfs-session", log, .. Self(), "session", "serve", "--id", id, "--cwd", workingDirectory])
         {
             start.ArgumentList.Add(argument);
         }
@@ -43,15 +52,12 @@ internal sealed class SessionHost : ISessionHost
     }
 
     /// <inheritdoc />
-    public async Task<bool> IsMountedAsync(SessionRecord record, CancellationToken cancellationToken) =>
-        await HostMount.IdentifyAsync(Settings(record), cancellationToken).ConfigureAwait(false) is not null;
+    public Task<int?> MountedPortAsync(string mountPath, CancellationToken cancellationToken) =>
+        HostMount.NinePPortAtAsync(mountPath, cancellationToken);
 
     /// <inheritdoc />
-    public Task UnmountAsync(SessionRecord record, CancellationToken cancellationToken) =>
-        HostMount.UnmountAsync(Settings(record), cancellationToken);
-
-    private static MountSettings Settings(SessionRecord record) =>
-        new(record.MountPath, MountStrategy.Native, record.Port, SmbPort: 0);
+    public Task UnmountAsync(string mountPath, int port, CancellationToken cancellationToken) =>
+        HostMount.UnmountAsync(new MountSettings(mountPath, MountStrategy.Native, port, SmbPort: 0), cancellationToken);
 
     /// <summary>
     /// How to run this program again. A published build is its own executable; a build run

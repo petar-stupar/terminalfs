@@ -49,8 +49,11 @@ internal sealed record SessionPaths(string Root)
     /// <summary>Everything the session's server printed.</summary>
     internal string LogPath(string id) => Path.Combine(Root, Checked(id) + ".log");
 
-    /// <summary>Held by whoever is starting or stopping the session.</summary>
-    internal string LockPath(string id) => Path.Combine(Root, Checked(id) + ".lock");
+    /// <summary>
+    /// Held by whoever is starting, stopping or collecting sessions. A session id cannot start
+    /// with a dot, so this can never be mistaken for one.
+    /// </summary>
+    internal string LockPath => Path.Combine(Root, ".lock");
 
     /// <summary>The ids of every session with a record.</summary>
     internal IEnumerable<string> RecordedIds() =>

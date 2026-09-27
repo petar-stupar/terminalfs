@@ -31,8 +31,11 @@ internal sealed record SessionOptions
     /// <summary>The directory the session's commands run in, or null for this process's.</summary>
     internal string? WorkingDirectory { get; init; }
 
-    /// <summary>How old a session <c>gc</c> stops, even with its server still running.</summary>
-    internal TimeSpan OlderThan { get; init; } = TimeSpan.FromHours(24);
+    /// <summary>
+    /// How old a session <c>gc</c> stops even with its server still running, or null to stop only
+    /// sessions whose server is gone.
+    /// </summary>
+    internal TimeSpan? OlderThan { get; init; }
 
     /// <summary>Print usage and stop.</summary>
     internal bool Help { get; init; }
@@ -101,6 +104,20 @@ internal sealed record SessionOptions
 
     private SessionOptions Validated()
     {
+        string action = Action == SessionAction.Collect ? "gc" : Action.ToString().ToLowerInvariant();
+
+        // A flag that does nothing for this action is refused rather than ignored: a hook that
+        // passes one believes it did something.
+        if (OlderThan is not null && Action != SessionAction.Collect)
+        {
+            throw new CliUsageException($"session {action}: --older-than is for gc");
+        }
+
+        if (WorkingDirectory is not null && Action is not (SessionAction.Start or SessionAction.Serve))
+        {
+            throw new CliUsageException($"session {action}: --cwd is for start");
+        }
+
         if (Action == SessionAction.Collect)
         {
             return Id is null
@@ -110,7 +127,7 @@ internal sealed record SessionOptions
 
         if (Id is null)
         {
-            throw new CliUsageException($"session {Action.ToString().ToLowerInvariant()}: --id is required");
+            throw new CliUsageException($"session {action}: --id is required");
         }
 
         if (!SessionPaths.IsValidId(Id))
@@ -151,22 +168,25 @@ internal sealed record SessionOptions
 
           start       start a server for this session on a free loopback port, mount it
                       at <runtime-dir>/terminalfs/<id>, and print that path. Starting a
-                      session that is already mounted prints its path again
+                      session that is already mounted prints its path again, and keeps
+                      the directory it was started in
           stop        stop the session's server, which kills its commands, unmount it and
                       remove its directory. Safe to run when there is nothing to stop
-          gc          stop every session whose server is gone, or that is older than
-                      --older-than, and remove what sessions left behind
+          gc          stop every session whose server is gone, and with --older-than every
+                      session older than that, and remove what sessions left behind
           serve       what start runs in the background: the session's server, in the
                       foreground, until it is stopped
 
           --id <id>                 the session: letters, digits, '_', '-' and '.'
           --cwd <dir>               the directory the session's commands run in; this
                                     one by default
-          --older-than <duration>   how old a session gc stops even when its server is
-                                    still running: 90s, 30m, 12h, 7d; 24h by default
+          --older-than <duration>   also stop sessions this old, and their commands, even
+                                    with their server running: 90s, 30m, 12h, 7d
           --help, -h                print this and stop
 
-        Linux only for now. The runtime directory is $XDG_RUNTIME_DIR, or $XDG_CACHE_HOME
-        (~/.cache by default) when that is not set.
+        Linux only for now. Mounting needs root, so start runs mount and umount through
+        sudo unless it is root already, and it needs the same settings file the shared
+        server does. The runtime directory is $XDG_RUNTIME_DIR, or $XDG_CACHE_HOME (~/.cache by
+        default) when that is not set.
         """;
 }

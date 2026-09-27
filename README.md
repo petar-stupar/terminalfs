@@ -241,15 +241,21 @@ free loopback port, mounted at a directory named after it:
 ```sh
 terminalfs session start --id "$SESSION_ID" --cwd "$PWD"   # prints the mount path
 terminalfs session stop --id "$SESSION_ID"
-terminalfs session gc --older-than 12h
+terminalfs session gc
 ```
 
-`start` returns once the tree is mounted and prints only its path, under `$XDG_RUNTIME_DIR/terminalfs`
-(or `~/.cache/terminalfs`); starting a session that is already mounted prints the same path again.
+`start` returns once the tree is mounted and prints only its path, under `$XDG_RUNTIME_DIR/terminalfs`,
+or `$XDG_CACHE_HOME/terminalfs` (`~/.cache/terminalfs`) where that is not set. Starting a session that
+is already mounted prints the same path again and keeps the directory it was first started in.
 `stop` stops the server, which kills its commands, then unmounts and removes the directory, and is
 safe to run when there is nothing to stop. `gc` does the same for every session whose server is
-gone or that is older than `--older-than` (a day by default), for agents that went away without
-stopping theirs. Sessions are Linux-only for now.
+gone; `--older-than 12h` also stops live sessions that old, commands and all, for agents that went
+away without stopping theirs.
+
+Sessions are Linux-only for now. They need the settings file (`terminalfs --init-settings`),
+`setsid`, and root to mount — through `sudo` for `mount` and `umount` unless you are root already.
+Each session only knows the runtime directory it was started under, so run `stop` and `gc` with the
+same `XDG_RUNTIME_DIR` as `start`.
 
 ### What it cannot do
 
