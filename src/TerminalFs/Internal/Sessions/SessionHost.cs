@@ -57,7 +57,7 @@ internal sealed class SessionHost : ISessionHost
 
     /// <inheritdoc />
     public Task UnmountAsync(string mountPath, int port, CancellationToken cancellationToken) =>
-        HostMount.UnmountAsync(new MountSettings(mountPath, MountStrategy.Native, port, SmbPort: 0), cancellationToken);
+        HostMount.UnmountIdentifiedAsync(mountPath, cancellationToken);
 
     /// <summary>
     /// How to run this program again. A published build is its own executable; a build run

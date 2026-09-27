@@ -90,6 +90,39 @@ public sealed class SessionTests : IDisposable
     }
 
     [Fact]
+    public async Task AWorkingDirectorySpelledWithATrailingSlashIsTheSameDirectory()
+    {
+        Running("slash");
+
+        await sessions.StartAsync("slash", root + Path.DirectorySeparatorChar, Token);
+
+        Assert.DoesNotContain(reports, line => line.Contains("its commands run in", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A record is written whole, so one that does not describe the session will not become one
+    /// by waiting. The start fails at once rather than discarding it every poll for its timeout.
+    /// </summary>
+    [Fact]
+    public async Task AServerThatRecordsSomethingElseFailsTheStartAtOnce()
+    {
+        host.OnLaunch = (id, _, _) =>
+        {
+            SessionRecord record = Running(id);
+            (record with { Id = "someone-else" }).Write(paths.RecordPath(id));
+
+            return Process.GetProcessById(record.Pid);
+        };
+
+        var clock = Stopwatch.StartNew();
+        MountException refused = await Assert.ThrowsAsync<MountException>(() => sessions.StartAsync("confused", root, Token));
+
+        Assert.Contains("does not describe", refused.Message, StringComparison.Ordinal);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5));
+        Assert.Empty(host.Mounted);
+    }
+
+    [Fact]
     public async Task ASessionWhoseTreeWentAwayIsStartedAfresh()
     {
         SessionRecord stale = Running("unmounted");
@@ -138,13 +171,14 @@ public sealed class SessionTests : IDisposable
 
         host.OnLaunch = (id, _, _) =>
         {
-            // Start disposes what it is handed, so it gets a process this test does not keep.
-            Process launched = Process.Start("sleep", ["300"]);
+            // Start disposes what it is handed, so it gets a second handle on a process this test
+            // keeps, and kills on the way out whatever start did.
+            Process launched = Start("sleep", "300");
             server = launched.Id;
             Directory.CreateDirectory(paths.MountPath(id));
             host.Mounted[paths.MountPath(id)] = 40999;
 
-            return launched;
+            return Process.GetProcessById(launched.Id);
         };
 
         await Assert.ThrowsAsync<MountException>(() => slow.StartAsync("slow", root, Token));
@@ -221,6 +255,60 @@ public sealed class SessionTests : IDisposable
         Assert.False(Directory.Exists(paths.MountPath("unrecorded")));
     }
 
+    /// <summary>
+    /// A mount whose server died and whose record and log are gone too is still found, from the
+    /// mount table rather than from anything on disk beside it.
+    /// </summary>
+    [Fact]
+    public async Task CollectingUnmountsAMountNothingElseRemembers()
+    {
+        Directory.CreateDirectory(paths.MountPath("forgotten"));
+        host.Mounted[paths.MountPath("forgotten")] = 40124;
+
+        Assert.Equal(new Collected(0, 0), await sessions.CollectAsync(null, Token));
+
+        Assert.Empty(host.Mounted);
+        Assert.False(Directory.Exists(paths.MountPath("forgotten")));
+    }
+
+    /// <summary>
+    /// A session's directory made a link to another's is removed as a link. Following it would
+    /// have unmounted the other session's tree and left its server serving nothing.
+    /// </summary>
+    [Fact]
+    public async Task ALinkAtASessionsPathNeverActsOnWhatItPointsAt()
+    {
+        SessionRecord other = Running("other");
+        Directory.CreateSymbolicLink(paths.MountPath("pointer"), other.MountPath);
+
+        Assert.True(await sessions.StopAsync("pointer", Token));
+
+        Assert.False(Path.Exists(paths.MountPath("pointer")));
+        Assert.True(Alive(other.Pid));
+        Assert.Equal(other.Port, host.Mounted[other.MountPath]);
+        Assert.True(Directory.Exists(other.MountPath));
+    }
+
+    /// <summary>
+    /// A tree somebody is still inside cannot be unmounted. That is reported, and every other
+    /// session is still collected.
+    /// </summary>
+    [Fact]
+    public async Task OneSessionThatCannotBeClearedUpDoesNotStopTheRest()
+    {
+        SessionRecord busy = Running("busy");
+        SessionRecord idle = Running("idle");
+        Kill(busy.Pid);
+        Kill(idle.Pid);
+        host.Busy.Add(busy.MountPath);
+
+        Collected collected = await sessions.CollectAsync(null, Token);
+
+        Assert.Equal(new Collected(1, 1), collected);
+        Assert.False(host.Mounted.ContainsKey(idle.MountPath));
+        Assert.Contains(reports, line => line.Contains("could not clear up session busy", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task AServerThatIgnoresTheStopIsKilledWithItsCommands()
     {
@@ -240,7 +328,7 @@ public sealed class SessionTests : IDisposable
         SessionRecord dead = Running("dead");
         Kill(dead.Pid);
 
-        int stopped = await sessions.CollectAsync(null, Token);
+        int stopped = (await sessions.CollectAsync(null, Token)).Stopped;
 
         Assert.Equal(1, stopped);
         Assert.Empty(host.Mounted);
@@ -255,7 +343,7 @@ public sealed class SessionTests : IDisposable
     {
         SessionRecord old = Running("old", created: DateTimeOffset.UtcNow.AddDays(-30));
 
-        Assert.Equal(0, await sessions.CollectAsync(null, Token));
+        Assert.Equal(0, (await sessions.CollectAsync(null, Token)).Stopped);
 
         Assert.True(Alive(old.Pid));
     }
@@ -266,7 +354,7 @@ public sealed class SessionTests : IDisposable
         SessionRecord old = Running("old", created: DateTimeOffset.UtcNow.AddHours(-2));
         SessionRecord young = Running("young");
 
-        int stopped = await sessions.CollectAsync(TimeSpan.FromHours(1), Token);
+        int stopped = (await sessions.CollectAsync(TimeSpan.FromHours(1), Token)).Stopped;
 
         Assert.Equal(1, stopped);
         Assert.True(Exited(old.Pid));
@@ -325,7 +413,7 @@ public sealed class SessionTests : IDisposable
         new SessionRecord("zombie", pid, startedAt, 40777, paths.MountPath("zombie"), root, DateTimeOffset.UtcNow)
             .Write(paths.RecordPath("zombie"));
 
-        Assert.Equal(1, await sessions.CollectAsync(null, Token));
+        Assert.Equal(1, (await sessions.CollectAsync(null, Token)).Stopped);
 
         Assert.DoesNotContain(reports, line => line.Contains("killing it", StringComparison.Ordinal));
         Assert.True(SpinWait.SpinUntil(() => !IsRunning(command), TimeSpan.FromSeconds(5)));
@@ -338,7 +426,11 @@ public sealed class SessionTests : IDisposable
     [Fact]
     public async Task AProcessThatReusedAServersPidIsNotStopped()
     {
-        Process bystander = Start("sleep", "300");
+        Assert.SkipUnless(HasSetsid, "needs setsid");
+
+        // A group leader, as the server was, so a group kill that ignored the start time would
+        // reach it and this would fail — rather than miss it and pass.
+        Process bystander = Start("setsid", "sleep", "300");
         Directory.CreateDirectory(root);
 
         var record = new SessionRecord(
@@ -377,9 +469,9 @@ public sealed class SessionTests : IDisposable
             json.Replace("MOUNT", paths.MountPath("bad"), StringComparison.Ordinal),
             Token);
 
-        Assert.Equal(0, await sessions.CollectAsync(null, Token));
+        Assert.Equal(new Collected(0, 0), await sessions.CollectAsync(null, Token));
         Assert.False(File.Exists(paths.RecordPath("bad")));
-        Assert.Equal(0, await sessions.CollectAsync(null, Token));
+        Assert.Equal(new Collected(0, 0), await sessions.CollectAsync(null, Token));
     }
 
     [Fact]
@@ -548,8 +640,16 @@ public sealed class SessionTests : IDisposable
         public Task<int?> MountedPortAsync(string mountPath, CancellationToken cancellationToken) =>
             Task.FromResult(Mounted.TryGetValue(mountPath, out int port) ? port : (int?)null);
 
+        /// <summary>Mounts that refuse to be unmounted, as one with somebody inside it does.</summary>
+        internal HashSet<string> Busy { get; } = [];
+
         public Task UnmountAsync(string mountPath, int port, CancellationToken cancellationToken)
         {
+            if (Busy.Contains(mountPath))
+            {
+                throw new MountException($"could not unmount {mountPath}: target is busy");
+            }
+
             Assert.Equal(Mounted[mountPath], port);
             Mounted.Remove(mountPath);
 

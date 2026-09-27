@@ -121,7 +121,8 @@ internal static class Program
         }
 
         SessionPaths paths = SessionPaths.Default;
-        string workingDirectory = Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory);
+        string workingDirectory = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory));
 
         // Starting is refused where it cannot work; stopping and collecting are not, because
         // there is never harm in finding nothing to clear up.
@@ -165,14 +166,26 @@ internal static class Program
                 return 0;
 
             case SessionAction.Collect:
-                int stopped = await sessions.CollectAsync(options.OlderThan, CancellationToken.None)
+                Collected collected = await sessions.CollectAsync(options.OlderThan, CancellationToken.None)
                     .ConfigureAwait(false);
-                Console.WriteLine(stopped == 1 ? "stopped 1 session" : $"stopped {stopped} sessions");
+                Console.WriteLine(collected.Stopped == 1 ? "stopped 1 session" : $"stopped {collected.Stopped} sessions");
 
-                return 0;
+                if (collected.Failed > 0)
+                {
+                    await Console.Error.WriteLineAsync($"terminalfs: {collected.Failed} could not be cleared up")
+                        .ConfigureAwait(false);
+                }
+
+                return collected.Failed > 0 ? 1 : 0;
 
             default:
                 string mountPath = paths.MountPath(id);
+
+                // Start makes the same checks before launching this, but serve can be run by
+                // hand, and it is the one that has root mount over the directory.
+                SessionFiles.SecureRoot(paths.Root);
+                await Sessions.CheckMountPointAsync(new SessionHost(), mountPath, CancellationToken.None)
+                    .ConfigureAwait(false);
 
                 try
                 {
@@ -263,22 +276,40 @@ internal static class Program
         // server started still going with nothing watching them.
         using var shutdown = new Shutdown();
 
+        bool announced = true;
+
         if (mounting)
         {
             try
             {
                 await Mounter.MountAsync(mount, shutdown.Token).ConfigureAwait(false);
-                mounted?.Invoke(mount.NinePPort);
             }
             catch (OperationCanceledException)
             {
                 await Console.Error.WriteLineAsync("terminalfs: interrupted while mounting")
                     .ConfigureAwait(false);
             }
+
+            // A tree nobody was told about is one nobody will stop, so failing to say it is
+            // mounted is failing to start: it is taken down again on the way out below.
+            try
+            {
+                if (!shutdown.Token.IsCancellationRequested)
+                {
+                    mounted?.Invoke(mount.NinePPort);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                await Console.Error.WriteLineAsync($"terminalfs: mounted, but could not say so: {exception.Message}")
+                    .ConfigureAwait(false);
+                announced = false;
+            }
         }
 
-        bool faulted = !shutdown.Token.IsCancellationRequested
-            && await Task.WhenAny(serving, shutdown.Requested).ConfigureAwait(false) == serving;
+        bool faulted = !announced
+            || (!shutdown.Token.IsCancellationRequested
+                && await Task.WhenAny(serving, shutdown.Requested).ConfigureAwait(false) == serving);
 
         if (mounting)
         {
@@ -296,7 +327,7 @@ internal static class Program
         // reason exists.
         await serving.ConfigureAwait(false);
 
-        if (faulted)
+        if (faulted && announced)
         {
             await Console.Error.WriteLineAsync("terminalfs: the server stopped on its own")
                 .ConfigureAwait(false);

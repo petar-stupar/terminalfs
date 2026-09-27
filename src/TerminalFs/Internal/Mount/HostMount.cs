@@ -243,22 +243,51 @@ internal static partial class HostMount
     }
 
     /// <summary>The same question asked of mount table lines already in hand.</summary>
+    /// <remarks>
+    /// <para>
+    /// Only the parent is resolved through links, never the path itself or the points in the
+    /// table. Resolving a mount point walks into the mount, and a mount whose server has stopped
+    /// answering blocks that walk for as long as the server does — which is exactly when this is
+    /// asked, by something trying to clear that session up.
+    /// </para>
+    /// <para>
+    /// It also means a link at a session's path does not answer for whatever it points at: one
+    /// session's directory made a link to another's must not get the other unmounted.
+    /// </para>
+    /// </remarks>
     internal static int? NinePPortAt(IEnumerable<string> lines, string mountPath)
     {
         string full = Path.GetFullPath(mountPath);
-        string real = RealPath(full);
+        string? parent = Path.GetDirectoryName(full);
+        string real = parent is null ? full : Path.Combine(RealPath(parent), Path.GetFileName(full));
 
         foreach (string line in lines)
         {
             string? point = MountPointOf(line);
 
-            if (point is not null && (point == full || point == real || RealPath(point) == real))
+            if (point is not null && (point == full || point == real))
             {
                 return NinePPortOf(line, DeviceOf(line));
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Detaches whatever is mounted at <paramref name="mountPath"/>, which the caller has already
+    /// identified as ours from the mount table. Nothing here reads through the mount, so a server
+    /// that has stopped answering does not stop its tree being taken away.
+    /// </summary>
+    internal static async Task UnmountIdentifiedAsync(string mountPath, CancellationToken cancellationToken = default)
+    {
+        CommandResult result = await Privileged(["umount", mountPath], TimeSpan.FromSeconds(60), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!result.Ok)
+        {
+            throw new MountException($"could not unmount {mountPath}: {result.Reason}");
+        }
     }
 
     /// <summary>

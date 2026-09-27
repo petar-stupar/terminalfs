@@ -108,6 +108,34 @@ public class MountGuardTests
         Assert.Null(HostMount.NinePPortAt(table, "/run/user/1000/terminalfs/d"));
     }
 
+    /// <summary>
+    /// A link at a session's path does not answer for the mount it points at, or stopping one
+    /// session would unmount another's.
+    /// </summary>
+    [Fact]
+    public void ALinkToAMountIsNotThatMount()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "the mount table is a Unix one");
+
+        string root = Path.Combine(Path.GetTempPath(), "terminalfs-guard-" + Guid.NewGuid().ToString("N"));
+        string real = Path.Combine(root, "a");
+        string link = Path.Combine(root, "b");
+        Directory.CreateDirectory(real);
+        Directory.CreateSymbolicLink(link, real);
+
+        try
+        {
+            string[] table = [$"127.0.0.1 on {real} type 9p (rw,trans=tcp,port=42855)"];
+
+            Assert.Equal(42855, HostMount.NinePPortAt(table, real));
+            Assert.Null(HostMount.NinePPortAt(table, link));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     /// <summary>The device column must not be able to satisfy the mount-point test.</summary>
     [Fact]
     public void ADeviceNamedLikeOurMountPointIsNotAMatch() =>

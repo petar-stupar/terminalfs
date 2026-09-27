@@ -255,7 +255,9 @@ away without stopping theirs.
 Sessions are Linux-only for now. They need the settings file (`terminalfs --init-settings`),
 `setsid`, and root to mount — through `sudo` for `mount` and `umount` unless you are root already.
 Each session only knows the runtime directory it was started under, so run `stop` and `gc` with the
-same `XDG_RUNTIME_DIR` as `start`.
+same `XDG_RUNTIME_DIR` as `start`. Sessions separate agents, not users: every tree runs commands as
+you, so a command run through one session can reach another session's tree like any other file of
+yours.
 
 ### What it cannot do
 
