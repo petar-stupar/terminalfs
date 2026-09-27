@@ -76,7 +76,9 @@ public static class Settings
         {
             string? configured = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
 
-            string root = string.IsNullOrEmpty(configured)
+            // The XDG specification says a relative value is to be ignored. Resolving it against
+            // the current directory would make the rules depend on where this was started from.
+            string root = string.IsNullOrEmpty(configured) || !Path.IsPathRooted(configured)
                 ? Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                     ".config")

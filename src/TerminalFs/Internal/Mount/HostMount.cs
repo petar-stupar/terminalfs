@@ -239,10 +239,14 @@ internal static partial class HostMount
             TimeSpan.FromSeconds(30),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return mounts.Ok
+        return MountTableFrom(mounts);
+    }
+
+    /// <summary>The table <paramref name="mounts"/> printed, or why there is none.</summary>
+    internal static string[] MountTableFrom(CommandResult mounts) =>
+        mounts.Ok
             ? mounts.Output.Split('\n')
             : throw new MountException($"cannot read the mount table: {mounts.Reason}");
-    }
 
     /// <summary>
     /// The port of the direct 9P mount at exactly <paramref name="mountPath"/> in

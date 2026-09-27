@@ -132,8 +132,10 @@ internal static class Program
         // And then left, whatever the action. .NET resolves a program to run against the current
         // directory, so from one that was deleted kill, mount, umount and sudo could not be
         // started at all; and a caller sitting in a session's tree would keep it busy. Commands
-        // run in workingDirectory, which is passed on explicitly.
-        Environment.CurrentDirectory = Path.GetTempPath();
+        // run in workingDirectory, which is passed on explicitly. The root of the filesystem
+        // this binary is on, not the temporary directory: $TMPDIR can be relative, or gone
+        // along with whatever the caller was cleaning up.
+        Environment.CurrentDirectory = Path.GetPathRoot(AppContext.BaseDirectory) ?? "/";
 
         // Starting is refused where it cannot work; stopping and collecting are not, because
         // there is never harm in finding nothing to clear up.

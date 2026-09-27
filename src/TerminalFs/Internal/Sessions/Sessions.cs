@@ -72,10 +72,15 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
             throw new MountException($"{mountPath} is a link; refusing to mount over it. 'terminalfs session stop --id {id}' removes it");
         }
 
-        // Nothing here would remove it, and the server's record could not be written over it.
-        if (listed.GetValueOrDefault(id + ".session") == EntryKind.Directory)
+        // Nothing here would remove one, and neither the log nor the record could be written
+        // over it.
+        foreach (string name in (string[])[id + ".session", id + ".session.tmp", id + ".log"])
         {
-            throw new MountException($"{paths.RecordPath(id)} is a directory where session {id}'s record belongs; remove it");
+            if (listed.GetValueOrDefault(name) == EntryKind.Directory)
+            {
+                throw new MountException(
+                    $"{Path.Combine(paths.Root, name)} is a directory where session {id}'s own files belong; remove it");
+            }
         }
 
         SessionRecord? existing = Recorded(id, listed);
@@ -142,7 +147,15 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
                 string why = Tail(log);
 
                 // The mount may have finished just as the deadline passed, with no record to say so.
-                await TearDownAsync(id, null, CancellationToken.None).ConfigureAwait(false);
+                // A failure here is added to the reason, never put in its place.
+                try
+                {
+                    await TearDownAsync(id, null, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is MountException or IOException or UnauthorizedAccessException)
+                {
+                    why += $"\n  and it could not be cleared up: {exception.Message}";
+                }
 
                 throw new MountException($"session {id} did not start: {failure}.{why}");
             }
@@ -167,6 +180,15 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
         if (!present)
         {
             report($"no session {id}; nothing to stop");
+
+            return false;
+        }
+
+        // A file where a session's directory would be, and nothing else of one: not a session.
+        if (listed.GetValueOrDefault(id) is EntryKind.File or EntryKind.Other
+            && !((string[])[id + ".session", id + ".session.tmp", id + ".log"]).Any(listed.ContainsKey))
+        {
+            report($"no session {id}; left {paths.MountPath(id)} in place: it is a file, not a session's directory");
 
             return false;
         }

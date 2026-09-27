@@ -501,15 +501,30 @@ public sealed class SessionTests : IDisposable
         Assert.SkipUnless(File.Exists("/usr/bin/mkfifo") || File.Exists("/bin/mkfifo"), "needs mkfifo");
 
         Directory.CreateDirectory(root);
-        using (Process mkfifo = Process.Start("mkfifo", [paths.RecordPath("piped")]))
+        string fifo = paths.RecordPath("piped");
+
+        using (Process mkfifo = Process.Start("mkfifo", [fifo]))
         {
             await mkfifo.WaitForExitAsync(Token);
+            Assert.Equal(0, mkfifo.ExitCode);
         }
 
-        Task<Collected> collecting = sessions.CollectAsync(null, Token);
+        // On another thread: a regression blocks inside open(2) before any await, and the test
+        // has to be able to notice that and let it go rather than hang the run.
+        Task<Collected> collecting = Task.Run(() => sessions.CollectAsync(null, Token), Token);
 
-        Assert.Same(collecting, await Task.WhenAny(collecting, Task.Delay(TimeSpan.FromSeconds(5), Token)));
-        Assert.False(Path.Exists(paths.RecordPath("piped")));
+        if (await Task.WhenAny(collecting, Task.Delay(TimeSpan.FromSeconds(5), Token)) != collecting)
+        {
+            // A writer releases a reader blocked opening the FIFO.
+            using (new FileStream(fifo, FileMode.Open, FileAccess.Write))
+            {
+            }
+
+            Assert.Fail("collecting opened a FIFO where a record belongs, and waited for a writer");
+        }
+
+        await collecting;
+        Assert.False(Path.Exists(fifo));
     }
 
     [Fact]
@@ -518,31 +533,34 @@ public sealed class SessionTests : IDisposable
         Directory.CreateDirectory(root);
         await File.WriteAllTextAsync(paths.MountPath("plain"), "somebody's", Token);
 
-        await sessions.StopAsync("plain", Token);
+        Assert.False(await sessions.StopAsync("plain", Token));
 
         Assert.Equal("somebody's", await File.ReadAllTextAsync(paths.MountPath("plain"), Token));
         Assert.Contains(reports, line => line.Contains("it is a file", StringComparison.Ordinal));
+        Assert.DoesNotContain(reports, line => line.Contains("stopped session", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public async Task ADirectoryWhereARecordBelongsRefusesTheStartByName()
+    [Theory]
+    [InlineData(".session")]
+    [InlineData(".session.tmp")]
+    [InlineData(".log")]
+    public async Task ADirectoryWhereASessionsOwnFileBelongsRefusesTheStartByName(string ending)
     {
-        Directory.CreateDirectory(paths.RecordPath("odd"));
+        Directory.CreateDirectory(Path.Combine(root, "odd" + ending));
 
         MountException refused = await Assert.ThrowsAsync<MountException>(() => sessions.StartAsync("odd", root, Token));
 
-        Assert.Contains("is a directory where session odd's record belongs", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("is a directory where session odd's own files belong", refused.Message, StringComparison.Ordinal);
         Assert.Equal(0, host.Launches);
     }
 
     /// <summary>
-    /// "Nothing is mounted" is the answer that makes it safe to look inside a session's
-    /// directory, so a mount table that could not be read never gives it.
+    /// A start is refused rather than going ahead as though nothing were mounted when the mount
+    /// table cannot be read. Reading the real table is pinned in <see cref="MountGuardTests"/>.
     /// </summary>
     [Fact]
-    public async Task AMountTableThatCannotBeReadIsNotAnEmptyOne()
+    public async Task AStartDoesNotGoAheadWithoutTheMountTable()
     {
-        Running("unknowable");
         host.TableUnreadable = true;
 
         await Assert.ThrowsAsync<MountException>(() => sessions.StartAsync("fresh", root, Token));

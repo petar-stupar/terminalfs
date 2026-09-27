@@ -109,6 +109,24 @@ public class MountGuardTests
     }
 
     /// <summary>
+    /// A session's directory is only looked into once the table says nothing is mounted on it, so
+    /// a table that could not be read must never read as an empty one.
+    /// </summary>
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(-1, true)]
+    public void AMountTableThatCouldNotBeReadIsAnErrorNotAnEmptyTable(int exitCode, bool missing)
+    {
+        MountException refused = Assert.Throws<MountException>(
+            () => HostMount.MountTableFrom(new CommandResult("mount", exitCode, string.Empty, "mount: failed", missing)));
+
+        Assert.Contains("cannot read the mount table", refused.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            ["127.0.0.1 on /a type 9p (trans=tcp,port=1)"],
+            HostMount.MountTableFrom(new CommandResult("mount", 0, "127.0.0.1 on /a type 9p (trans=tcp,port=1)", string.Empty)));
+    }
+
+    /// <summary>
     /// A link at a session's path does not answer for the mount it points at, or stopping one
     /// session would unmount another's.
     /// </summary>
