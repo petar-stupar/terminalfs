@@ -335,13 +335,16 @@ public sealed class RenderTests : IDisposable
     [Fact]
     public async Task AStatusRevisionMovesWhenTheCommandDoes()
     {
-        Command command = workspace.Run("t1", "echo hello");
+        // A command that cannot finish until it is told to: one that finished on its own could
+        // do so before the revision was first read, and on a fast machine an echo did.
+        Command command = workspace.Run("t1", "sleep 300");
 
         var commands = (TerminalDirectory)Registry.Root.Find("cmd")!;
         var directory = (TerminalDirectory)commands.Find("t1")!;
 
         uint before = directory.Find("status")!.Revision;
 
+        command.Kill();
         await Workspace.Finished(command);
 
         Assert.True(
