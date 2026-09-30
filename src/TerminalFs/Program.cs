@@ -6,6 +6,7 @@ using NineP.Protocol.Transports;
 using NineP.Server;
 using TerminalFs.Core;
 using TerminalFs.Core.Permissions;
+using TerminalFs.Internal.Hooks;
 using TerminalFs.Internal.Mount;
 using TerminalFs.Internal.Server;
 using TerminalFs.Internal.Sessions;
@@ -24,7 +25,8 @@ internal static class Program
         catch (CliUsageException exception)
         {
             await Console.Error.WriteLineAsync("terminalfs: " + exception.Message).ConfigureAwait(false);
-            await Console.Error.WriteLineAsync(IsSession(args) ? SessionOptions.Usage : CliOptions.Usage)
+            await Console.Error.WriteLineAsync(
+                    IsSession(args) ? SessionOptions.Usage : args is ["hook", ..] ? HookUsage : CliOptions.Usage)
                 .ConfigureAwait(false);
 
             return 2;
@@ -62,6 +64,11 @@ internal static class Program
         if (IsSession(args))
         {
             return await SessionAsync(SessionOptions.Parse(args[1..])).ConfigureAwait(false);
+        }
+
+        if (args is ["hook", ..])
+        {
+            return await HookAsync(args[1..]).ConfigureAwait(false);
         }
 
         CliOptions options = CliOptions.Parse(args);
@@ -152,24 +159,8 @@ internal static class Program
         switch (options.Action)
         {
             case SessionAction.Start:
-                // Both checked here as well as by the server, because here is where they can be
-                // said: a hook sees what start prints, and nothing of what the server logs.
-                if (!Directory.Exists(workingDirectory))
-                {
-                    throw new CliUsageException($"--cwd: {workingDirectory} is not a directory");
-                }
-
-                if (!File.Exists(Settings.DefaultPath))
-                {
-                    throw new MountException(
-                        $"{Settings.DefaultPath} does not exist, and a session's server will not start "
-                        + "without the rules that say what it may not run. Write one with sane "
-                        + "defaults by running 'terminalfs --init-settings'.");
-                }
-
                 // The path, alone, on standard output: it is what a hook hands its agent.
-                Console.WriteLine(await sessions.StartAsync(id, workingDirectory, CancellationToken.None)
-                    .ConfigureAwait(false));
+                Console.WriteLine(await StartSessionAsync(sessions, id, workingDirectory).ConfigureAwait(false));
 
                 return 0;
 
@@ -225,6 +216,138 @@ internal static class Program
                 }
         }
     }
+
+    /// <summary>Starts session <paramref name="id"/>, or finds it started, and returns where its tree is.</summary>
+    private static async Task<string> StartSessionAsync(Sessions sessions, string id, string workingDirectory)
+    {
+        // Both checked here as well as by the server, because here is where they can be said: a
+        // hook sees what start prints, and nothing of what the server logs.
+        if (!Directory.Exists(workingDirectory))
+        {
+            throw new CliUsageException($"--cwd: {workingDirectory} is not a directory");
+        }
+
+        if (!File.Exists(Settings.DefaultPath))
+        {
+            throw new MountException(
+                $"{Settings.DefaultPath} does not exist, and a session's server will not start "
+                + "without the rules that say what it may not run. Write one with sane "
+                + "defaults by running 'terminalfs --init-settings'.");
+        }
+
+        return await sessions.StartAsync(id, workingDirectory, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// <c>terminalfs hook claude &lt;event&gt;</c>: what Claude Code runs, with the event's JSON on
+    /// standard input.
+    /// </summary>
+    /// <remarks>
+    /// Claude Code reads a hook's exit code as well as what it prints. 2 blocks a tool call
+    /// whatever else happened, and anything else but 0 is a failure it reports and then carries on
+    /// past — so a check that falls over lets the call through. Every failure here is turned into
+    /// an answer instead: a refusal when the call was headed for a session tree, and nothing when
+    /// it was not.
+    /// </remarks>
+    private static async Task<int> HookAsync(string[] args)
+    {
+        if (args is ["--help" or "-h"] or ["claude", "--help" or "-h"])
+        {
+            Console.WriteLine(HookUsage);
+
+            return 0;
+        }
+
+        if (args is not ["claude", "session-start" or "session-end" or "pre-tool-use"])
+        {
+            throw new CliUsageException("hook: say 'claude session-start', 'claude session-end' or 'claude pre-tool-use'");
+        }
+
+        string json = await Console.In.ReadToEndAsync().ConfigureAwait(false);
+        SessionPaths paths = SessionPaths.Default;
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        if (args[1] == "pre-tool-use")
+        {
+            try
+            {
+                ClaudeDecision? decision = new ClaudeHook(paths, Environment.GetEnvironmentVariable, home, ClaudeSettings.ManagedDirectory)
+                    .PreToolUse(ClaudeHookInput.Parse(json));
+
+                if (decision is not null)
+                {
+                    Console.WriteLine(decision.Json());
+                }
+            }
+            catch (Exception exception) when (json.Contains(paths.Root, StringComparison.Ordinal) || json.Contains("/terminalfs", StringComparison.Ordinal))
+            {
+                Console.WriteLine(new ClaudeDecision("deny", $"terminalfs could not check this call: {exception.Message}").Json());
+            }
+
+            return 0;
+        }
+
+        ClaudeHookInput input = ClaudeHookInput.Parse(json);
+
+        if (!SessionPaths.IsValidId(input.SessionId))
+        {
+            throw new MountException($"'{input.SessionId}' cannot name a session tree");
+        }
+
+        // As a session command does, and for the same reasons: nothing here should keep a tree
+        // busy, or fail to start a program because the session's directory went away.
+        Environment.CurrentDirectory = Path.GetPathRoot(AppContext.BaseDirectory) ?? "/";
+
+        var sessions = new Sessions(paths, new SessionHost(), Console.Error.WriteLine);
+
+        if (args[1] == "session-end")
+        {
+            await sessions.StopAsync(input.SessionId, CancellationToken.None).ConfigureAwait(false);
+
+            return 0;
+        }
+
+        string context;
+
+        try
+        {
+            if (!OperatingSystem.IsLinux())
+            {
+                throw new MountException("sessions are Linux-only for now");
+            }
+
+            string mountPath = await StartSessionAsync(sessions, input.SessionId, input.WorkingDirectory).ConfigureAwait(false);
+
+            context = $"This session's terminalfs tree is mounted at {mountPath}. Wherever the terminalfs skill "
+                + $"writes <mount>, the path is {mountPath}.";
+        }
+        catch (Exception exception) when (exception is MountException or CliUsageException or CommandException or IOException or UnauthorizedAccessException)
+        {
+            // The session goes on without a tree, and the agent is told so rather than left to
+            // find out by writing to a directory that is not there.
+            await Console.Error.WriteLineAsync("terminalfs: " + exception.Message).ConfigureAwait(false);
+
+            context = $"terminalfs could not start a tree for this session, so the terminalfs skill cannot be used: {exception.Message}";
+        }
+
+        Console.WriteLine(ClaudeHook.SessionContext(context));
+
+        return 0;
+    }
+
+    /// <summary>How to use <c>terminalfs hook</c>.</summary>
+    internal const string HookUsage = """
+        usage: terminalfs hook claude session-start
+               terminalfs hook claude session-end
+               terminalfs hook claude pre-tool-use
+
+        What the Claude Code plugin runs, with the hook's JSON on standard input.
+
+          session-start   start this session's tree, and tell the agent where it is
+          session-end     stop it
+          pre-tool-use    check a command written to the tree against the session's
+                          Claude Code permission rules, and refuse any other write into it
+        """;
 
     /// <param name="options">What to serve and where.</param>
     /// <param name="mounted">Told the port once the tree is mounted, if it is.</param>

@@ -1,0 +1,43 @@
+{
+  "description": "Start and stop a terminalfs tree for each session, and check what is run through it against the session's permission rules",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "terminalfs",
+            "args": ["hook", "claude", "session-start"],
+            "timeout": 60,
+            "statusMessage": "Mounting this session's terminalfs tree"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "terminalfs",
+            "args": ["hook", "claude", "session-end"],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "terminalfs",
+            "args": ["hook", "claude", "pre-tool-use"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

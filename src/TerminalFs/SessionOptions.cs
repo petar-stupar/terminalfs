@@ -188,7 +188,7 @@ internal sealed record SessionOptions
 
         Linux only for now. Mounting needs root, so start runs mount and umount through
         sudo unless it is root already, and it needs the same settings file the shared
-        server does. The runtime directory is $XDG_RUNTIME_DIR, or $XDG_CACHE_HOME (~/.cache by
-        default) when that is not set.
+        server does. The runtime directory is $TERMINALFS_RUNTIME_DIR, else $XDG_RUNTIME_DIR, else
+        $XDG_CACHE_HOME (~/.cache by default).
         """;
 }

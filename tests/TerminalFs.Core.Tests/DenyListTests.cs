@@ -37,6 +37,21 @@ public sealed class DenyListTests
         Assert.Null(deny.Match("git pull"));
     }
 
+    /// <summary>
+    /// Claude Code reads a space and a trailing star as <c>:*</c> when the star is the rule's only
+    /// one, and the same rule has to mean the same thing in both places.
+    /// </summary>
+    [Fact]
+    public void ATrailingSpaceStarIsThePrefixForm()
+    {
+        DenyList deny = Of("Bash(git push *)");
+
+        Assert.NotNull(deny.Match("git push"));
+        Assert.NotNull(deny.Match("git push origin main"));
+        Assert.Null(deny.Match("git pushover"));
+        Assert.NotNull(Of("Bash(git * main)").Match("git push origin main"));
+    }
+
     [Fact]
     public void AGlobRuleIsAnchoredAtBothEnds()
     {

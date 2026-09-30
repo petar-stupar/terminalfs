@@ -11,9 +11,11 @@ namespace TerminalFs.Core.Permissions;
 /// <c>.claude/settings.local.json</c> and this file without being rewritten. Three shapes:
 /// </para>
 /// <list type="bullet">
-/// <item><c>Bash(git push:*)</c> — a prefix. The command is <c>git push</c>, or begins with
-/// <c>git push</c> followed by whitespace. The boundary is what keeps it from matching
-/// <c>git pushes-nothing</c>.</item>
+/// <item><c>Bash(git push:*)</c> or <c>Bash(git push *)</c> — a prefix. The command is
+/// <c>git push</c>, or begins with <c>git push</c> followed by whitespace. The boundary is what
+/// keeps it from matching <c>git pushes-nothing</c>. A space and a <c>*</c> at the end mean the
+/// same as <c>:*</c> only when that <c>*</c> is the rule's one wildcard, which is how Claude Code
+/// reads them.</item>
 /// <item><c>Bash(rm -rf /*)</c> — a glob, anchored at both ends, where <c>*</c> stands for any
 /// run of characters including none.</item>
 /// <item><c>Bash(halt)</c> — no <c>*</c> at all, so the command must be exactly that.</item>
@@ -83,10 +85,23 @@ public sealed class DenyRule
             throw new CommandException($"'{entry}' denies nothing; it has an empty pattern");
         }
 
-        return body.EndsWith(":*", StringComparison.Ordinal)
+        if (body.EndsWith(":*", StringComparison.Ordinal))
+        {
+            return new DenyRule(trimmed, Normalize(body[..^2]), prefix: true);
+        }
+
+        // Before normalising, which would take the space off the end of 'ls ' and turn a rule
+        // that stops at a word into one that matches lsof.
+        return body.EndsWith(" *", StringComparison.Ordinal) && body.Count(c => c == '*') == 1
             ? new DenyRule(trimmed, Normalize(body[..^2]), prefix: true)
             : new DenyRule(trimmed, Normalize(body), prefix: false);
     }
+
+    /// <summary>
+    /// A rule matching every command, for an entry that names the whole tool — <c>Bash</c> — where
+    /// the caller has a use for one.
+    /// </summary>
+    internal static DenyRule Everything(string text) => new(text, "*", prefix: false);
 
     /// <summary>Whether this rule refuses <paramref name="command"/>, already normalised.</summary>
     public bool Matches(string command) =>

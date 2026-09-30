@@ -1,0 +1,14 @@
+{
+  "name": "terminalfs",
+  "description": "terminalfs for Claude Code",
+  "owner": {
+    "name": "petar-stupar"
+  },
+  "plugins": [
+    {
+      "name": "terminalfs",
+      "source": "./plugins/terminalfs",
+      "description": "A terminalfs tree for each session, with the session's own permission rules applied to every command run through it"
+    }
+  ]
+}

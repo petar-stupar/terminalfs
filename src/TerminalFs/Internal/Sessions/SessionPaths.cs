@@ -14,10 +14,17 @@ internal sealed record SessionPaths(string Root)
     /// The runtime directory of this user, as the machine they are on names it.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>$XDG_RUNTIME_DIR</c> is the right place, because it is per user, private, and emptied
     /// at logout — which is exactly the lifetime of a mount made for an agent session. macOS has
     /// no such directory and neither does a container that was not started by a login, so the
     /// fallback is the cache directory: private to the user and never mistaken for data.
+    /// </para>
+    /// <para>
+    /// <c>$TERMINALFS_RUNTIME_DIR</c> comes before both, for a machine that wants its session trees
+    /// somewhere it chose — a container that bind-mounts one directory for every agent in it, say
+    /// — without moving everything else that reads <c>$XDG_RUNTIME_DIR</c>.
+    /// </para>
     /// </remarks>
     internal static SessionPaths Default { get; } = Resolve(
         Environment.GetEnvironmentVariable,
@@ -26,11 +33,14 @@ internal sealed record SessionPaths(string Root)
     /// <summary>The same answer, computed from an environment and a home directory in hand.</summary>
     internal static SessionPaths Resolve(Func<string, string?> environment, string home)
     {
-        string? runtime = environment("XDG_RUNTIME_DIR");
-
-        if (!string.IsNullOrEmpty(runtime) && Path.IsPathRooted(runtime))
+        foreach (string variable in (string[])["TERMINALFS_RUNTIME_DIR", "XDG_RUNTIME_DIR"])
         {
-            return new SessionPaths(Path.Combine(runtime, "terminalfs"));
+            string? runtime = environment(variable);
+
+            if (!string.IsNullOrEmpty(runtime) && Path.IsPathRooted(runtime))
+            {
+                return new SessionPaths(Path.Combine(runtime, "terminalfs"));
+            }
         }
 
         string? cache = environment("XDG_CACHE_HOME");
