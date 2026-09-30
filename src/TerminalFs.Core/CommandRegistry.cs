@@ -584,13 +584,27 @@ public sealed class CommandRegistry : IDisposable
             // Making the command creates its directory and opens its two output files, which is
             // real work to do under a lock. It stays here anyway: two commits of one name racing
             // outside it would both truncate the same stdout.
-            command = new Command(
-                name,
-                draft.Ordinal,
-                Path.Combine(OutputRoot, name),
-                options.KeepAfterExit,
-                options.TimeProvider,
-                Expire);
+            try
+            {
+                command = new Command(
+                    name,
+                    draft.Ordinal,
+                    Path.Combine(OutputRoot, name),
+                    options.KeepAfterExit,
+                    options.TimeProvider,
+                    Expire);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // No command without its output files, and the draft is claimed and cannot be
+                // decided again. The name is given back rather than left listed in /ctl, where it
+                // could be neither removed nor taken, and the reason goes where the server logs.
+                drafts.Remove(name);
+                Touch();
+                Diagnostics.Report($"could not make /cmd/{name}, so it did not run", exception);
+
+                return;
+            }
 
             drafts.Remove(name);
             commands[name] = command;

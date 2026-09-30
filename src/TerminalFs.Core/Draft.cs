@@ -399,7 +399,7 @@ public sealed class Draft
             return;
         }
 
-        timer = time.CreateTimer(_ => onKeepElapsed(this), null, keep, Timeout.InfiniteTimeSpan);
+        timer = time.CreateTimer(Diagnostics.Guarded($"freeing /ctl/{name}", () => onKeepElapsed(this)), null, keep, Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>Starts the settle clock. Returns true when there is none and the caller must commit.</summary>
@@ -421,7 +421,7 @@ public sealed class Draft
             return true;
         }
 
-        timer = time.CreateTimer(_ => onSettleElapsed(this), null, settle, Timeout.InfiniteTimeSpan);
+        timer = time.CreateTimer(Diagnostics.Guarded($"running /ctl/{name}", () => onSettleElapsed(this)), null, settle, Timeout.InfiniteTimeSpan);
 
         return false;
     }

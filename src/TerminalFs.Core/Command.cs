@@ -508,7 +508,7 @@ public sealed class Command
                 return;
             }
 
-            timer = time.CreateTimer(_ => onExpire(this), null, keep, Timeout.InfiniteTimeSpan);
+            timer = time.CreateTimer(Diagnostics.Guarded($"removing /cmd/{Id}", () => onExpire(this)), null, keep, Timeout.InfiniteTimeSpan);
         }
     }
 
