@@ -106,7 +106,8 @@ refuses a tag whose version has no section here.
   first user's `/tmp/terminalfs` kept anyone else's server from starting. It now goes under
   `$XDG_CACHE_HOME/terminalfs-output` (`~/.cache/terminalfs-output`), in directories only the
   user can open; Windows keeps its temporary directory, which is the user's own. What servers
-  that are gone left in `/tmp/terminalfs` is cleared the next time one starts.
+  that are gone left in `/tmp/terminalfs` is cleared the next time one starts. Where the home
+  directory cannot be written, set `XDG_CACHE_HOME` to somewhere that can.
 - **`--keep 0` no longer breaks a write tool that creates its file first.** A name nobody has
   written to yet is held for at least ten seconds, so the write after an empty create finds it.
 - **A command whose output cannot be made no longer takes the server down.** A full disk or no

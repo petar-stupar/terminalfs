@@ -15,7 +15,9 @@ for a tree you mount yourself.
 
 Output is a file that grows, so `tail`, `grep` and `wc -l` work on it, a long command is a
 directory you look at whenever you like, and several commands run at once because they are several
-files. Nothing is on disk: `cmd/build/` is the server's account of the command, rendered when read.
+files. The tree itself is not on disk: `cmd/build/` is the server's account of the command,
+rendered when read. What a command prints is kept under `~/.cache/terminalfs-output`, readable by
+you alone, and removed with the command.
 
 Built on [`ninep`](https://github.com/petar-stupar/9p-csharp), the 9P implementation for .NET.
 
