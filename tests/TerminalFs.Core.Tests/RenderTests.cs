@@ -23,13 +23,16 @@ public sealed class RenderTests : IDisposable
             (await page.ContentAsync(TestContext.Current.CancellationToken)).Span);
     }
 
-    private static async Task<string> Skill(Workspace workspace)
+    private static TerminalDirectory SkillDirectory(Workspace workspace, string harness)
     {
         var skills = (TerminalDirectory)workspace.Registry.Root.Find("skills")!;
-        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
+        var directory = (TerminalDirectory)skills.Find(harness)!;
 
-        return await Text(skill.Find("SKILL.md")!);
+        return (TerminalDirectory)directory.Find("terminalfs")!;
     }
+
+    private static async Task<string> Skill(Workspace workspace, string harness) =>
+        await Text(SkillDirectory(workspace, harness).Find("SKILL.md")!);
 
     private static IEnumerable<TerminalNode> Walk(TerminalDirectory directory)
     {
@@ -205,58 +208,177 @@ public sealed class RenderTests : IDisposable
         Assert.Null(directory.Find("kill"));
     }
 
+    /// <summary>
+    /// A skill per harness, and nothing else: a harness pointed at <c>/skills</c> whole would
+    /// otherwise find two skills with the same name and no way to tell which is its own.
+    /// </summary>
     [Fact]
-    public async Task TheSkillDescribesRunningWaitingReadingAndRemoving()
+    public void EachHarnessHasASkillOfItsOwn()
     {
-        string text = await Skill(workspace);
+        var skills = (TerminalDirectory)Registry.Root.Find("skills")!;
+
+        Assert.Equal(["index.md", "opencode", "claude-code"], skills.Children.Select(child => child.Name));
+
+        foreach (string harness in new[] { "opencode", "claude-code" })
+        {
+            Assert.Equal(
+                ["index.md", "SKILL.md"],
+                SkillDirectory(workspace, harness).Children.Select(child => child.Name));
+        }
+    }
+
+    [Theory]
+    [InlineData("opencode")]
+    [InlineData("claude-code")]
+    public async Task EverySkillCarriesTheRulesTheHarnessesShare(string harness)
+    {
+        string text = await Skill(workspace, harness);
 
         Assert.StartsWith("---\nname: terminalfs\n", text, StringComparison.Ordinal);
 
-        foreach (string mentioned in new[] { "> <mount>/ctl", "/wait", "/exitcode", "rm -r", "kill " })
-        {
-            Assert.Contains(mentioned, text, StringComparison.Ordinal);
-        }
+        // One name per command, where a refusal's reason is, and not spending a turn on rm -r.
+        Assert.Contains("A name runs once", text, StringComparison.Ordinal);
+        Assert.Contains("`reason`", text, StringComparison.Ordinal);
+        Assert.Contains("## Do not clean up", text, StringComparison.Ordinal);
 
         // The one thing an agent will otherwise waste a command discovering.
         Assert.Contains("no standard input", text, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// The skill is the one page meant to be copied out of the tree and followed from outside it,
-    /// so it is the one page that needs to name where the tree is. Nobody said here, so it keeps
-    /// the placeholder: a path this server guessed at would send an agent to a directory that is
-    /// not there, which is worse than one that asks to be filled in.
+    /// <c>stdout</c> grows, so reading it before <c>wait</c> returns whatever had arrived by then
+    /// and says nothing about it being partial.
+    /// </summary>
+    [Theory]
+    [InlineData("opencode")]
+    [InlineData("claude-code")]
+    public async Task EverySkillReadsWaitBeforeStdout(string harness)
+    {
+        string text = await Skill(workspace, harness);
+
+        // The first example, not the prose around it, is what gets copied.
+        int example = text.IndexOf("```", StringComparison.Ordinal);
+        int wait = text.IndexOf("/wait", example, StringComparison.Ordinal);
+        int stdout = text.IndexOf("/stdout", example, StringComparison.Ordinal);
+
+        Assert.True(example >= 0 && wait > example, "the skill has no example that reads wait");
+        Assert.True(stdout > wait, "the first example reads stdout before wait");
+    }
+
+    /// <summary>
+    /// In the Bash shape a failed write does not stop the reads after it, and when the name was
+    /// already used they print that command's output. Unless the skill says so, it reads as the
+    /// answer to the command that was refused.
     /// </summary>
     [Fact]
-    public async Task TheSkillKeepsItsPlaceholderWhenNobodyHasSaidWhereTheTreeIs()
+    public async Task TheClaudeCodeSkillSaysAFailedWriteIsFollowedBySomebodyElsesOutput()
     {
-        Assert.Contains("<mount>/ctl/build", await Skill(workspace), StringComparison.Ordinal);
+        string text = await Skill(workspace, "claude-code");
 
-        var skills = (TerminalDirectory)Registry.Root.Find("skills")!;
-        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
-
-        Assert.Contains(
-            "replace that with where this tree is",
-            await Text(skill.Find("index.md")!),
-            StringComparison.Ordinal);
+        Assert.Contains("what the reads after it print is not your\ncommand's", text, StringComparison.Ordinal);
+        Assert.Contains("The reads print that earlier command's state and output", text, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task TheSkillNamesTheMountpointWhenOneIsKnown()
+    public async Task TheOpenCodeSkillWritesAndReadsInOneExecuteScript()
+    {
+        string text = await Skill(workspace, "opencode");
+
+        Assert.Contains("inside a single `execute` script", text, StringComparison.Ordinal);
+        Assert.Contains("await tools.file_write({ path: `${M}/ctl/${n}`", text, StringComparison.Ordinal);
+        Assert.Contains("const M = \"<mount>\"", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The shape is fixed so that a permission check can read the command out of the Bash call.
+    /// Changing it breaks whatever parses it, so this pins it byte for byte.
+    /// </summary>
+    [Fact]
+    public async Task TheClaudeCodeSkillWritesAndReadsInOneBashCallOfAFixedShape()
+    {
+        string text = await Skill(workspace, "claude-code");
+
+        Assert.Contains(
+            """
+            ```sh
+            cat > <mount>/ctl/build <<'CMD'
+            dotnet build 2>&1 | tail -40
+            CMD
+            cat <mount>/cmd/build/wait; cat <mount>/cmd/build/stdout
+            ```
+            """,
+            text,
+            StringComparison.Ordinal);
+
+        Assert.Contains("in the same Bash call", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The skills are the pages followed from outside the tree, so they are the ones that need to
+    /// name where it is. Nobody said here, so they keep the placeholder: a path this server
+    /// guessed at would send an agent to a directory that is not there, which is worse than one
+    /// that asks to be filled in. Each says where the real one comes from instead.
+    /// </summary>
+    [Fact]
+    public async Task EachSkillSaysWhereItsPathComesFromWhenNobodyHasSaid()
+    {
+        string openCode = await Skill(workspace, "opencode");
+
+        Assert.Contains("<mount>/ctl/<name>", openCode, StringComparison.Ordinal);
+        Assert.Contains(
+            "the path you read this skill from,\nwithout `/skills/opencode/terminalfs/SKILL.md` on the end",
+            openCode,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "how to work out the",
+            await Text(SkillDirectory(workspace, "opencode").Find("index.md")!),
+            StringComparison.Ordinal);
+
+        string claudeCode = await Skill(workspace, "claude-code");
+
+        Assert.Contains("<mount>/ctl/build", claudeCode, StringComparison.Ordinal);
+        Assert.Contains("Your session context names it", claudeCode, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Replace that with where this tree is mounted",
+            await Text(SkillDirectory(workspace, "claude-code").Find("index.md")!),
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("opencode")]
+    [InlineData("claude-code")]
+    public async Task EverySkillNamesTheMountpointWhenOneIsKnown(string harness)
     {
         using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs" });
 
-        string text = await Skill(mounted);
+        string text = await Skill(mounted, harness);
 
-        Assert.Contains("echo 'dotnet build' > /mnt/tfs/ctl/build", text, StringComparison.Ordinal);
+        Assert.Contains("The tree is mounted at `/mnt/tfs`.", text, StringComparison.Ordinal);
+        Assert.Contains("/mnt/tfs/ctl/", text, StringComparison.Ordinal);
         Assert.DoesNotContain("<mount>", text, StringComparison.Ordinal);
-
-        var skills = (TerminalDirectory)mounted.Registry.Root.Find("skills")!;
-        var skill = (TerminalDirectory)skills.Find("terminalfs")!;
+        Assert.DoesNotContain("<where>", text, StringComparison.Ordinal);
 
         Assert.Contains(
-            "copy it as it is",
-            await Text(skill.Find("index.md")!),
+            "already the ones on this machine",
+            await Text(SkillDirectory(mounted, harness).Find("index.md")!),
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A Claude Code skill is a copy taken out of one tree and kept, and a tree per session means
+    /// the next session's is somewhere else. So a copy naming a path still gives way to the one the
+    /// session context names.
+    /// </summary>
+    [Fact]
+    public async Task TheClaudeCodeSkillGivesWayToTheMountTheSessionNames()
+    {
+        using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs" });
+
+        Assert.Contains(
+            "If your session context names a terminalfs\nmount of its own, that one is yours",
+            await Skill(mounted, "claude-code"),
             StringComparison.Ordinal);
     }
 
@@ -264,21 +386,27 @@ public sealed class RenderTests : IDisposable
     /// Only <c>&lt;mount&gt;</c> is substituted. The other angle-bracketed words are placeholders
     /// a reader is meant to fill in themselves, and a general template pass would eat them.
     /// </summary>
-    [Fact]
-    public async Task TheSkillLeavesItsOtherPlaceholdersAlone()
+    [Theory]
+    [InlineData("opencode")]
+    [InlineData("claude-code")]
+    public async Task EverySkillLeavesItsOtherPlaceholdersAlone(string harness)
     {
         using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs" });
 
-        Assert.Contains("/mnt/tfs/ctl/<name>", await Skill(mounted), StringComparison.Ordinal);
+        Assert.Contains("/mnt/tfs/ctl/<name>", await Skill(mounted, harness), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task ATrailingSeparatorOnTheMountpointDoesNotDoubleUp()
+    [Theory]
+    [InlineData("opencode")]
+    [InlineData("claude-code")]
+    public async Task ATrailingSeparatorOnTheMountpointDoesNotDoubleUp(string harness)
     {
         using var mounted = new Workspace(new CommandOptions { MountPath = "/mnt/tfs/" });
 
-        Assert.Contains("/mnt/tfs/ctl/build", await Skill(mounted), StringComparison.Ordinal);
-        Assert.DoesNotContain("//ctl", await Skill(mounted), StringComparison.Ordinal);
+        string text = await Skill(mounted, harness);
+
+        Assert.Contains("/mnt/tfs/ctl/", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("//ctl", text, StringComparison.Ordinal);
     }
 
     [Fact]

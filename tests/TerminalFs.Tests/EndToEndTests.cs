@@ -613,7 +613,8 @@ public sealed class EndToEndTests
         Assert.Equal(["index.md", "ctl", "cmd", "skills"], top);
 
         Assert.Contains("Commands, as files", await ReadAsync(session, "/index.md"), StringComparison.Ordinal);
-        Assert.Contains("name: terminalfs", await ReadAsync(session, "/skills/terminalfs/SKILL.md"), StringComparison.Ordinal);
+        Assert.Contains("name: terminalfs", await ReadAsync(session, "/skills/opencode/terminalfs/SKILL.md"), StringComparison.Ordinal);
+        Assert.Contains("name: terminalfs", await ReadAsync(session, "/skills/claude-code/terminalfs/SKILL.md"), StringComparison.Ordinal);
     }
 
     /// <summary>
