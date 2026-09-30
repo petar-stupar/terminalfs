@@ -107,7 +107,7 @@ internal sealed record OpencodeDecision(string Effect, string? Message = null)
 internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> environment, string home)
 {
     /// <summary>What <c>session-start</c> tells the plugin: where the tree is, and what to tell the agent.</summary>
-    internal static string Started(string? mountPath, string context)
+    internal static string Started(string? mountPath, string context, string root)
     {
         var buffer = new MemoryStream();
 
@@ -121,6 +121,7 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
             }
 
             writer.WriteString("context", context);
+            writer.WriteString("root", root);
             writer.WriteEndObject();
         }
 
@@ -141,69 +142,75 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
         {
             TreeCall.Refused refused => new OpencodeDecision("deny", "terminalfs: " + refused.Reason),
             TreeCall.Harmless => new OpencodeDecision("allow"),
-            TreeCall.Run run => Decide(run, check.Rules),
+            TreeCall.Run run => Decide(run, check.Rules, check.Directory),
             _ => OpencodeDecision.None,
         };
     }
 
     private TreeCall Classify(OpencodeCheck check)
     {
-        string? Resolved(string? path) =>
-            string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path, check.Directory);
+        string own = paths.MountPath(check.SessionId);
 
-        // The directory question comes first and shows only the directory. The command's own
-        // question is left to the edit check that follows, whose prompt shows it as the diff.
-        switch (check.Action == "external_directory" ? null : check.Tool)
+        // Where opencode resolved the file to, which is what gets written: the tool's own input can
+        // spell it any way a path can be spelled, and a spelling this read differently from
+        // opencode — ~ is not a directory name to opencode — would be a write nobody checked.
+        string[] targets = [.. check.Resources
+            .Select(resource => resource.EndsWith("/*", StringComparison.Ordinal) ? resource[..^2] : resource)
+            .Select(resource => Path.GetFullPath(resource, check.Directory))];
+        string[] inTrees = [.. targets.Where(target => Under(target, paths.Root))];
+
+        if (check.Action == "external_directory")
         {
-            case "write" when Resolved(check.Field("path") ?? check.Field("filePath")) is { } path:
-                return TreeCalls.Write(path, check.Field("content") ?? string.Empty, paths, check.SessionId);
+            if (inTrees.FirstOrDefault(target => !Under(target, own)) is { } other)
+            {
+                return new TreeCall.Refused($"{other} is not this session's tree; this session uses only its own, {own}");
+            }
 
-            case "edit" when Resolved(check.Field("path") ?? check.Field("filePath")) is { } path:
-                return TreeCalls.Edit(path, paths);
+            // The session's own tree, and nothing else in this question, is answered here; what is
+            // written there is checked when opencode checks the write itself, whose prompt shows
+            // the command. Any other directory in the same question stays opencode's to ask about.
+            return inTrees.Length > 0 && inTrees.Length == targets.Length
+                ? new TreeCall.Harmless()
+                : new TreeCall.Elsewhere();
+        }
 
-            case "patch" or "apply_patch":
-                return (check.Field("patchText") ?? string.Empty).Contains(paths.Root, StringComparison.Ordinal)
+        if (check.Action == "edit")
+        {
+            foreach (string target in inTrees)
+            {
+                TreeCall call = check.Tool == "write"
+                    ? TreeCalls.Write(target, check.Field("content") ?? string.Empty, paths, check.SessionId)
+                    : TreeCalls.Edit(target, paths);
+
+                if (call is not TreeCall.Elsewhere)
+                {
+                    return call;
+                }
+            }
+
+            // A patch names its files in its text too; one naming a tree is refused whether or not
+            // opencode's resources said so.
+            return check.Tool is "patch" or "apply_patch"
+                && (check.Field("patchText") ?? string.Empty).Contains(paths.Root, StringComparison.Ordinal)
                     ? new TreeCall.Refused("nothing in a session tree is patched. Write a command to ctl/<name> with the write tool")
                     : new TreeCall.Elsewhere();
-
-            case "shell" or "bash" when check.Field("command") is { } command:
-                return TreeCalls.Bash(command, paths, check.SessionId, TreeCalls.Spellings(paths, environment, home));
         }
 
-        // A check whose call the plugin did not see, such as the external_directory check a write
-        // outside the project makes first: judged on where it points.
-        string own = paths.MountPath(check.SessionId);
-        TreeCall result = new TreeCall.Elsewhere();
-
-        foreach (string resource in check.Resources)
+        return (check.Action, check.Tool) switch
         {
-            string path = resource.EndsWith("/*", StringComparison.Ordinal) ? resource[..^2] : resource;
-
-            if (!path.StartsWith(paths.Root + "/", StringComparison.Ordinal) && path != paths.Root)
-            {
-                continue;
-            }
-
-            if (path != own && !path.StartsWith(own + "/", StringComparison.Ordinal))
-            {
-                return new TreeCall.Refused($"{path} is not this session's tree; this session uses only its own, {own}");
-            }
-
-            // The directory is this session's own. What is written there is checked when opencode
-            // checks the write itself, so this one question is not asked twice.
-            if (check.Action == "external_directory")
-            {
-                result = new TreeCall.Harmless();
-            }
-        }
-
-        return result;
+            ("shell", _) or (_, "shell" or "bash") when check.Field("command") is { } command =>
+                TreeCalls.Bash(command, paths, check.SessionId, TreeCalls.Spellings(paths, environment, home)),
+            _ => new TreeCall.Elsewhere(),
+        };
     }
 
-    private static OpencodeDecision Decide(TreeCall.Run run, IReadOnlyList<OpencodeRule> rules)
+    private static bool Under(string path, string directory) =>
+        path == directory || path.StartsWith(directory + "/", StringComparison.Ordinal);
+
+    private static OpencodeDecision Decide(TreeCall.Run run, IReadOnlyList<OpencodeRule> rules, string directory)
     {
         string shown = OneLine(run.Command);
-        OpencodeVerdict verdict = OpencodeRules.Decide(run.Command, rules);
+        OpencodeVerdict verdict = OpencodeRules.Decide(run.Command, rules, directory: directory);
 
         return verdict.Effect switch
         {

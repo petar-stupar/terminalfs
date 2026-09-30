@@ -40,7 +40,8 @@ function terminalfs(event, input) {
   })
 }
 
-const mentionsTrees = (value) => JSON.stringify(value ?? "").includes("/terminalfs")
+/** The tools that can put something into a file, and so into a tree. */
+const writers = new Set(["write", "edit", "patch", "apply_patch", "shell", "bash"])
 
 /** The text a tool result carries, with `more` added to it. */
 function appended(content, more) {
@@ -52,31 +53,43 @@ export default {
   id: "terminalfs",
   setup: async (ctx) => {
     const directory = ctx.location.directory
-    /** sessionID -> Promise<{ mount?, context }> */
+    /** sessionID -> Promise<{ mount?, context, root? }> */
     const trees = new Map()
-    /** tool call id -> { tool, input } for calls that name a tree */
+    /** tool call id -> { tool, input } for every call that could write a file */
     const calls = new Map()
+    /** Where session trees live, once a session has started and said. */
+    let root
+    const mentionsTrees = (value) => JSON.stringify(value ?? "").includes(root ?? "/terminalfs")
 
     const start = (sessionID) => {
       if (!trees.has(sessionID)) {
         trees.set(
           sessionID,
-          terminalfs("session-start", { session_id: sessionID, cwd: directory }).catch((error) => ({
-            context: `terminalfs could not start a tree for this session, so the terminalfs skill cannot be used: ${error.message}`,
-          })),
+          terminalfs("session-start", { session_id: sessionID, cwd: directory })
+            .then((tree) => {
+              root ??= tree.root
+              return tree
+            })
+            .catch((error) => ({
+              context: `terminalfs could not start a tree for this session, so the terminalfs skill cannot be used: ${error.message}`,
+            })),
         )
       }
       return trees.get(sessionID)
     }
 
-    const stop = (sessionID) => {
-      if (!trees.delete(sessionID)) return Promise.resolve()
-      return terminalfs("session-end", { session_id: sessionID }).catch(() => {})
+    const stop = async (sessionID) => {
+      const starting = trees.get(sessionID)
+      if (!starting) return
+      trees.delete(sessionID)
+      // A start still under way would otherwise mount the tree after it had been stopped.
+      await starting
+      await terminalfs("session-end", { session_id: sessionID }).catch(() => {})
     }
 
-    /** The session's permission rules, in the order its agent resolves them. */
+    /** The session's permission rules, in the order opencode resolves them: agent, then session. */
     const rules = async (sessionID, agentID) => {
-      const session = (await ctx.session.get({ sessionID }))?.data
+      const session = await ctx.session.get({ sessionID })
       const agent = (await ctx.agent.get({ agentID: agentID ?? session?.agent }))?.data
       return [...(agent?.permissions ?? []), ...(session?.permissions ?? [])]
     }
@@ -103,13 +116,18 @@ export default {
       if (tree?.context) event.system.push({ type: "text", text: tree.context })
     })
 
+    // Every call that could write a file is kept until it is done, whatever its input says: a path
+    // can be spelled without naming the tree (~/.., a relative one), and the permission check that
+    // follows is judged on where opencode resolved it, with the content from here.
     await ctx.tool.hook("execute.before", (event) => {
-      if (mentionsTrees(event.input)) calls.set(event.id, { tool: event.tool, input: event.input })
+      if (writers.has(event.tool)) calls.set(event.id, { tool: event.tool, input: event.input })
     })
 
     await ctx.permission.hook("evaluate", async (event) => {
       const call = event.source?.id ? calls.get(event.source.id) : undefined
-      if (!call && !mentionsTrees(event.resources)) return
+      // A shell command can reach a tree however it spells the path, so every one is checked;
+      // anything else only when it names where trees live.
+      if (event.action !== "shell" && !mentionsTrees(event.resources) && !mentionsTrees(call?.input)) return
 
       try {
         const decision = await terminalfs("check", {

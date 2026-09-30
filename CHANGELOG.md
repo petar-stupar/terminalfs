@@ -42,8 +42,11 @@ refuses a tag whose version has no section here.
   which opencode migrates) as opencode would read them for its shell tool: a deny refuses the write
   naming the rule, an ask shows opencode's prompt with the command as the diff, and an allow runs
   it, after which the write's result carries the command's state, exit code and output — one call
-  per command. Writes into another session's tree, edits and patches in a tree, and shell calls
-  that write into one in any shape but the skill's are refused. `terminalfs hook opencode
+  per command. A write is judged on where opencode resolved its path to, however it was spelled.
+  Writes into another session's tree, edits and patches in a tree, and shell calls that write into
+  one in any shape but the skill's are refused, and a `cd` out of the project in a command is
+  asked about as opencode's shell tool would ask. An "always" answer to the prompt is opencode's
+  for an edit, and allows every edit in the project. `terminalfs hook opencode
   session-start|session-end|check` is what it runs.
 - **`$TERMINALFS_RUNTIME_DIR`** says where session trees live, before `$XDG_RUNTIME_DIR`.
 

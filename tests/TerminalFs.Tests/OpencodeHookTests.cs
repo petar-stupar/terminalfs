@@ -26,7 +26,11 @@ public sealed class OpencodeHookTests
             ["session_id"] = Session,
             ["directory"] = "/home/agent/project",
             ["action"] = action,
-            ["resources"] = resources ?? [],
+            // Where opencode resolved the tool's path to, as it sends it for the edit check.
+            ["resources"] = resources ?? (action == "edit" && input is not null
+                && JsonSerializer.SerializeToElement(input).TryGetProperty("path", out JsonElement path)
+                    ? [Path.GetFullPath(path.GetString()!, "/home/agent/project")]
+                    : []),
             ["tool"] = tool,
             ["input"] = input,
             ["rules"] = rules ?? [new { action = "*", resource = "*", effect = "allow" }],
@@ -102,6 +106,52 @@ public sealed class OpencodeHookTests
     [Fact]
     public void ARelativePathIsResolvedAgainstTheSessionsDirectory() =>
         Assert.Equal("none", Check("edit", "write", new { path = "notes/ctl/x", content = "sudo ls" }).Effect);
+
+    /// <summary>
+    /// What opencode writes is where it resolved the path to, and a spelling read differently
+    /// here — ~ is not a directory name to opencode — would be a write nobody checked.
+    /// </summary>
+    [Fact]
+    public void AWriteIsJudgedOnWhereOpencodeResolvedItTo()
+    {
+        object[] rules = [Rule("*", "allow"), Rule("uname *", "deny")];
+
+        OpencodeDecision tilde = Check(
+            "edit",
+            "write",
+            new { path = "~/../../run/user/1000/terminalfs/" + Session + "/ctl/x", content = "uname -a" },
+            rules,
+            [$"{Tree}/ctl/x"]);
+
+        Assert.Equal("deny", tilde.Effect);
+
+        OpencodeDecision patched = Check(
+            "edit",
+            "patch",
+            new { patchText = "*** Begin Patch\n*** Add File: ../x/ctl/y\n+uname -a\n*** End Patch" },
+            rules,
+            [$"{Tree}/ctl/y"]);
+
+        Assert.Equal("deny", patched.Effect);
+    }
+
+    /// <summary>
+    /// The session's own tree is answered here; another directory asked about in the same
+    /// question is still opencode's to ask about.
+    /// </summary>
+    [Fact]
+    public void AnswerForTheOwnTreeDoesNotCoverOtherDirectories() =>
+        Assert.Equal("none", Check("external_directory", "shell", new { command = "ls" }, resources: [$"{Tree}/cmd/x/*", "/etc/*"]).Effect);
+
+    /// <summary>opencode asks before its shell tool changes to a directory outside the project.</summary>
+    [Fact]
+    public void AChangeOfDirectoryOutOfTheProjectIsAskedAboutAsOpencodeWould()
+    {
+        object[] rules = [Rule("*", "allow"), new { action = "external_directory", resource = "*", effect = "ask" }];
+
+        Assert.Equal("ask", Check("edit", "write", new { path = $"{Tree}/ctl/x", content = "cd /etc && ls" }, rules).Effect);
+        Assert.Equal("allow", Check("edit", "write", new { path = $"{Tree}/ctl/y", content = "cd src && ls" }, rules).Effect);
+    }
 
     [Fact]
     public void ACheckThatDoesNotTouchTheTreesIsLeftToOpencode()

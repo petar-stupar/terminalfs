@@ -183,7 +183,7 @@ public sealed class Draft
         {
             lock (gate)
             {
-                return text;
+                return refusal is null ? text : null;
             }
         }
     }

@@ -353,6 +353,18 @@ public sealed class EndToEndTests
         Assert.Equal(Errno.EEXIST, refused.Error.Errno);
     }
 
+    /// <summary>A refused command has no command to give back: its reason is under /cmd.</summary>
+    [Fact]
+    public async Task ARefusedCommandIsNotReadBack()
+    {
+        await using Served served = await Served.StartAsync(deny: ["Bash(sudo:*)"], settle: TimeSpan.FromSeconds(30));
+        await using NinePSession session = await served.ConnectAsync();
+
+        await Assert.ThrowsAsync<NinePException>(async () => await RunAsync(session, "t1", "sudo ls"));
+
+        await Assert.ThrowsAsync<NinePException>(async () => await ReadAsync(session, "/ctl/t1"));
+    }
+
     [Fact]
     /// <summary>
     /// A name already taken is refused as <c>EEXIST</c>, not as "no such file". Answering the

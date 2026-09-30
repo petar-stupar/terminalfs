@@ -40,8 +40,8 @@ calls.
 
 The plugin checks each command against your `shell` permission rules, as if you had run
 it with a shell tool, before the write lands. A refusal names the rule; don't reword the
-command to get round it. opencode may ask the user first. Write the path out in full: a
-write into the tree any other way is refused.
+command to get round it. opencode may ask the user first. Write the path out in full, as
+above.
 
 ## One name, one command
 

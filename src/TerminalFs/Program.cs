@@ -380,7 +380,7 @@ internal static class Program
             context = $"terminalfs could not start a tree for this session, so the terminalfs skill cannot be used: {exception.Message}";
         }
 
-        Console.WriteLine(claude ? ClaudeHook.SessionContext(context) : OpencodeHook.Started(mounted, context));
+        Console.WriteLine(claude ? ClaudeHook.SessionContext(context) : OpencodeHook.Started(mounted, context, paths.Root));
 
         return 0;
     }

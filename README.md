@@ -356,9 +356,17 @@ them. A shell tool writing into the tree in the Claude Code skill's shape is che
 and the same things are refused: another session's tree, an edit or a patch in a tree, and a write
 the plugin cannot read a command out of.
 
-opencode keeps an "always" answer to that prompt as an edit rule, not a shell one, so it does not
-carry over to the next command; write a `shell` allow rule for that. The same caveat as for Claude
-Code applies: this is a check an agent following its instructions stays inside, not a boundary.
+The prompt is opencode's prompt for an edit, so an "always" answer saves what opencode saves for
+an edit: every edit in the project allowed from then on. The next terminalfs command is still asked
+about, because the plugin answers each one from the `shell` rules; to stop being asked, write a
+`shell` allow rule. Likewise "always" answers given to opencode's own shell tool are not seen here.
+
+A write's result waits for the command, up to the tree's `wait` timeout (25 seconds); a command
+still running then says so, and the rest is read from `cmd/<name>/`. A session keeps its tree, and
+its server, until the session is deleted or opencode's server stops; `terminalfs session gc
+--older-than <duration>` clears up the ones left behind by a server that ran for days. Like
+sessions themselves, this is Linux-only. The same caveat as for Claude Code applies: this is a check
+an agent following its instructions stays inside, not a boundary.
 
 ### What it cannot do
 
