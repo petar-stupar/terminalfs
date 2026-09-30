@@ -519,10 +519,86 @@ internal static partial class TreeCalls
     }
 
     /// <summary>The commands of <paramref name="command"/>, each as the stages of its pipeline.</summary>
-    private static IEnumerable<string[]> Pipelines(string command) =>
-        Sequences().Split(command)
-            .Where(pipeline => pipeline.Trim().Length > 0)
-            .Select(pipeline => Pipes().Split(pipeline).Select(stage => stage.Trim()).ToArray());
+    /// <remarks>
+    /// Split where a shell would split, which is never inside quotes: the <c>|</c> in
+    /// <c>grep -E "error | warning"</c> is part of a pattern. <c>&amp;&amp;</c>, <c>||</c>,
+    /// <c>;</c>, a newline and a lone <c>&amp;</c> end a command; <c>|</c> and <c>|&amp;</c> end
+    /// a stage; the <c>&amp;</c> of a redirection, <c>2&gt;&amp;1</c> or <c>&amp;&gt;</c>, does
+    /// neither. An unclosed quote runs to the end, where the words of it cannot be read.
+    /// </remarks>
+    private static List<string[]> Pipelines(string command)
+    {
+        var pipelines = new List<string[]>();
+        var stages = new List<string>();
+        var current = new System.Text.StringBuilder();
+        char quote = '\0';
+
+        void EndStage()
+        {
+            stages.Add(current.ToString().Trim());
+            current.Clear();
+        }
+
+        void EndPipeline()
+        {
+            EndStage();
+
+            if (stages.Any(stage => stage.Length > 0))
+            {
+                pipelines.Add([.. stages]);
+            }
+
+            stages.Clear();
+        }
+
+        for (int at = 0; at < command.Length; at++)
+        {
+            char character = command[at];
+            char next = at + 1 < command.Length ? command[at + 1] : '\0';
+            char previous = at > 0 ? command[at - 1] : '\0';
+
+            if (quote != '\0')
+            {
+                current.Append(character);
+
+                if (character == quote)
+                {
+                    quote = '\0';
+                }
+            }
+            else if (character is '\'' or '"')
+            {
+                quote = character;
+                current.Append(character);
+            }
+            else if ((character == '&' && next == '&') || (character == '|' && next == '|'))
+            {
+                EndPipeline();
+                at++;
+            }
+            else if (character is ';' or '\n' || (character == '&' && previous != '>' && next != '>'))
+            {
+                EndPipeline();
+            }
+            else if (character == '|')
+            {
+                if (next == '&')
+                {
+                    at++;
+                }
+
+                EndStage();
+            }
+            else
+            {
+                current.Append(character);
+            }
+        }
+
+        EndPipeline();
+
+        return pipelines;
+    }
 
     /// <summary><c>echo x &gt; &lt;tree&gt;/cmd/&lt;name&gt;/kill</c>, which ends a command.</summary>
     private static bool IsKill(string segment, string own) =>
@@ -586,10 +662,4 @@ internal static partial class TreeCalls
     /// <summary><c>2&gt;&amp;1</c> and <c>2&gt;/dev/null</c>, which send a read's errors where it is going or nowhere.</summary>
     [GeneratedRegex(@"(?<=\s)2>(&1|/dev/null)(?=\s|$)")]
     private static partial Regex HarmlessRedirections();
-
-    [GeneratedRegex(@"&&|\|\||;|\n|(?<![|>])&(?!>)")]
-    private static partial Regex Sequences();
-
-    [GeneratedRegex(@"\|&|\|")]
-    private static partial Regex Pipes();
 }

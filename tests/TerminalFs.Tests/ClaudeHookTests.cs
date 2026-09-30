@@ -389,6 +389,8 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("echo x > /tmp/x; cat {tree}/cmd/build/stdout")]
     [InlineData("echo \"$(cat /etc/passwd)\"; cat {tree}/cmd/build/stdout")]
     [InlineData("echo \"`id`\"; cat {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | grep \"x\" | rm -rf /tmp/y")]
+    [InlineData("cat {tree}/cmd/build/stdout & rm -rf /tmp/y")]
     [InlineData("ls {tree}/ctl && cp notes.txt {tree}/ctl/x")]
     [InlineData("grep -e error --file=/home/u/.ssh/id_rsa {tree}/cmd/build/stdout")]
     [InlineData("grep -rf patterns {tree}/cmd/build/stdout")]
@@ -429,6 +431,8 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("ls -la {tree}/ctl/")]
     [InlineData("ls {tree}")]
     [InlineData("grep error {tree}/cmd/build/stdout || echo \"(no errors found)\"")]
+    [InlineData("cat {tree}/cmd/build/stdout | grep -E \"error | Error | ERROR\"")]
+    [InlineData("echo 'a; b && c'; tail -3 {tree}/cmd/build/stdout")]
     public void ReadsOfTheTreeAfterTheCommandRideAlong(string read)
     {
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
