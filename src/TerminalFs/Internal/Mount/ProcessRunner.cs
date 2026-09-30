@@ -104,6 +104,12 @@ internal static class ProcessRunner
         {
             // It exited between the timeout and the kill, which is the outcome the kill wanted.
         }
+        catch (Exception exception) when (exception is AggregateException or System.ComponentModel.Win32Exception)
+        {
+            // Part of the tree is root's — the mount under a sudo — and cannot be signalled from
+            // here. The timeout is still the answer: this is reported as a command that did not
+            // finish, not as a crash with a stack trace.
+        }
     }
 
     /// <summary>
