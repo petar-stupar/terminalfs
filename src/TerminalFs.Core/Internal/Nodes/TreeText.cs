@@ -561,7 +561,9 @@ internal static class TreeText
         a command written to a path it cannot see, and refuses the ones it notices.
 
         A refusal says why. `denied by` names the rule and the settings file it is in; don't
-        reword the command to get round it.
+        reword the command to get round it. `needs approval` means no rule decides it and the
+        person was asked: refused, it did not run. A refusal of the call itself comes back as the
+        call's error and leaves nothing under `cmd/`, so there is no `reason` file to read.
 
         Read `wait` **before** `stdout`. `wait` blocks until the command stops and prints
         `completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that

@@ -186,7 +186,7 @@ internal sealed class ClaudeHook(SessionPaths paths, Func<string, string?> envir
                     "deny",
                     $"terminalfs: no permission rule allows '{shown}', and this session does not ask"),
                 "auto" => null,
-                _ => new ClaudeDecision("ask", $"Run through terminalfs: {shown}"),
+                _ => new ClaudeDecision("ask", $"terminalfs: no permission rule allows or denies '{shown}', so it needs approval to run through this session's tree"),
             },
         };
     }

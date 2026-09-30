@@ -85,7 +85,15 @@ internal static partial class TreeCalls
     {
         // Quotes taken out first, so "$XDG_RUNTIME_DIR"/terminalfs is the spelling it stands for.
         string unquoted = command.Replace("\"", string.Empty, StringComparison.Ordinal).Replace("'", string.Empty, StringComparison.Ordinal);
-        string[] lines = command.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        // Blank lines and comments at the start taken off, because a model writing a call over
+        // several lines often starts it with one, and the shape is looked for on the first line.
+        string[] lines = [.. command.Replace("\r\n", "\n", StringComparison.Ordinal).Trim().Split('\n')
+            .SkipWhile(line => line.TrimStart().StartsWith('#') || line.Trim().Length == 0)];
+
+        if (lines.Length == 0)
+        {
+            return new TreeCall.Elsewhere();
+        }
 
         if (spellings.FirstOrDefault(spelling => unquoted.Contains(spelling, StringComparison.Ordinal)) is { } other)
         {
@@ -112,6 +120,14 @@ internal static partial class TreeCalls
             && Under(Normalised(Unquoted(opening.Groups["path"].Value)), paths.Root))
         {
             return Written(lines, Normalised(Unquoted(opening.Groups["path"].Value)), own, paths);
+        }
+
+        // Reads of this session's tree and nothing else, ctl/ included — `ls ctl` shows the names
+        // in flight — are harmless whatever they read. Anything else that names a place in the
+        // tree is held to the stricter check below, since naming ctl/ is how a write gets there.
+        if (Pipelines(command).All(stages => TreeReads(stages, own)))
+        {
+            return new TreeCall.Harmless();
         }
 
         foreach (string path in Paths(command, paths.Root))
@@ -295,8 +311,9 @@ internal static partial class TreeCalls
         return FirstSegment(inside) is "cmd" or "skills" or "index.md" || inside == "ctl/index.md"
             ? null
             : new TreeCall.Refused(
-                $"{path} is reached in a way this check cannot read the command from. Write a command "
-                + "with the Bash shape the terminalfs skill gives, and read what it did under cmd/");
+                $"{path} is named in a call that does more than read the tree, so it could write a command "
+                + "this check cannot read. Write commands in the Bash shape the terminalfs skill gives, and "
+                + "keep a call that lists or reads the tree to reads alone");
     }
 
     private static string? ControlName(string path, string own)
@@ -318,7 +335,7 @@ internal static partial class TreeCalls
     /// nothing that could start a command of its own inside it.
     /// </summary>
     private static bool IsRead(string segment) =>
-        segment.AsSpan().IndexOfAny(NotInARead) < 0
+        HarmlessRedirections().Replace(segment, " ").AsSpan().IndexOfAny(NotInARead) < 0
         && ReadingPrograms.Contains(segment.Split(' ', '\t')[0], StringComparer.Ordinal);
 
     /// <summary>
@@ -345,7 +362,7 @@ internal static partial class TreeCalls
     /// </remarks>
     private static bool ReadsOnly(string segment, string own, bool piped)
     {
-        if (!IsRead(segment) || Words(segment) is not [var program, .. var arguments])
+        if (!IsRead(segment) || Words(HarmlessRedirections().Replace(segment, " ")) is not [var program, .. var arguments])
         {
             return false;
         }
@@ -536,7 +553,11 @@ internal static partial class TreeCalls
     [GeneratedRegex("""^echo\s+[^\s$`"'\\]+\s*>\s*(?<path>"[^"]*"|'[^']*'|\S+)$""")]
     private static partial Regex Kill();
 
-    [GeneratedRegex(@"&&|\|\||;|\n|(?<!\|)&")]
+    /// <summary><c>2&gt;&amp;1</c> and <c>2&gt;/dev/null</c>, which send a read's errors where it is going or nowhere.</summary>
+    [GeneratedRegex(@"(?<=\s)2>(&1|/dev/null)(?=\s|$)")]
+    private static partial Regex HarmlessRedirections();
+
+    [GeneratedRegex(@"&&|\|\||;|\n|(?<![|>])&(?!>)")]
     private static partial Regex Sequences();
 
     [GeneratedRegex(@"\|&|\|")]

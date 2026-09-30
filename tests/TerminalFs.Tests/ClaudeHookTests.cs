@@ -355,6 +355,10 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("ls {tree}/cmd/build")]
     [InlineData("echo x > {tree}/cmd/build/kill")]
     [InlineData("cat {tree}/skills/claude-code/terminalfs/SKILL.md")]
+    [InlineData("ls -la {tree}/ctl/")]
+    [InlineData("ls {tree}")]
+    [InlineData("ls -la {tree}/ctl/ 2>&1")]
+    [InlineData("cat {tree}/cmd/build/stderr 2>/dev/null | tail -5")]
     public void ReadingTheTreeOrEndingACommandIsAllowed(string command) =>
         Assert.Equal("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
 
@@ -378,6 +382,10 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("cat {tree}/cmd/build/../../../etc/passwd")]
     [InlineData("echo $(id) > {tree}/cmd/build/kill")]
     [InlineData("grep -f /etc/passwd {tree}/cmd/build/stdout")]
+    [InlineData("cp notes.txt {tree}/ctl")]
+    [InlineData("cat {tree}/cmd/build/stdout 2>/tmp/x")]
+    [InlineData("cat {tree}/cmd/build/stdout 2>&1 > /tmp/x")]
+    [InlineData("ls {tree}/ctl && cp notes.txt {tree}/ctl/x")]
     [InlineData("grep -e error --file=/home/u/.ssh/id_rsa {tree}/cmd/build/stdout")]
     [InlineData("grep -rf patterns {tree}/cmd/build/stdout")]
     [InlineData("cat {tree}/cmd/build/stdout | wc --f=list")]
@@ -416,6 +424,23 @@ public sealed class ClaudeHookTests : IDisposable
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
 
         Assert.Equal("allow", Bash(Shape(Tree, "ls") + $"; {read.Replace("{tree}", Tree, StringComparison.Ordinal)}")?.Decision);
+    }
+
+    /// <summary>
+    /// A model writing the call over several lines often begins it with a blank line or two; the
+    /// call is still the skill's shape. Found by running Claude Code with the plugin.
+    /// </summary>
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\n\n  ")]
+    [InlineData("\r\n")]
+    [InlineData("# Step 1: build it\n")]
+    [InlineData("\n# Step 1\n\n")]
+    public void TheSkillsShapeAfterABlankLineIsStillRead(string before)
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(make)"] } }""");
+
+        Assert.Equal("allow", Bash(before + Shape(Tree, "make") + "\n")?.Decision);
     }
 
     /// <summary>A read after the command that reaches another session's tree says so.</summary>
