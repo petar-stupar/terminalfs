@@ -1,31 +1,41 @@
 #!/usr/bin/env python3
-"""Checks one live run's transcript against what the plugin promises.
+"""Checks one live run against what the plugin promises in its scenario.
 
-Usage: check.py claude|opencode <scenario> <transcript>
+Usage: check.py claude|opencode <scenario> <transcript> <project>
 
-A model decides what it writes, so these checks look for outcomes rather than exact calls: that
-a command ran through the tree, that the deny rule refused `rm`, that no call in the skill's shape
-was refused as unreadable, that an ask says why. Every refusal the hook gave is printed either way,
-because a new kind of refusal is the thing to look at after changing the hooks.
+A model decides what it writes, so these checks look at outcomes, read off the project rather
+than the transcript: whether build.sh ran inside the tree (it notes so in .ran), and whether out/,
+which a deny rule protects, is still there. From the transcript they take only two things: that no
+call in the skill's shape was refused as unreadable, and that an ask says why. Every refusal the
+hooks gave is printed either way, because a new kind of refusal is the thing to look at after
+changing the hooks.
 """
 import json
 import re
 import sys
 
-if len(sys.argv) != 4 or sys.argv[1] not in ("claude", "opencode"):
-    sys.exit("usage: check.py claude|opencode run|ask <transcript.jsonl>\n"
-             "run.sh calls this for each run; run it yourself on a transcript kept with TFS_LIVE_KEEP=1")
+import os
 
-harness, scenario, path = sys.argv[1], sys.argv[2], sys.argv[3]
+if len(sys.argv) != 5 or sys.argv[1] not in ("claude", "opencode"):
+    sys.exit("usage: check.py claude|opencode <scenario> <transcript.jsonl> <project>\n"
+             "run.sh calls this for each run; run it yourself on a run kept with TFS_LIVE_KEEP=1")
+
+harness, scenario, path, project = sys.argv[1:5]
 SHAPE = re.compile(r"^cat\s*>\s*\S+/ctl/[A-Za-z0-9_.-]+\s*<<\s*'CMD'\s*$")
 
 calls = []  # (command, result text, is_error)
 
 
+session_mode = None
+
+
 def claude():
+    global session_mode
     pending = {}
     for line in open(path):
         event = json.loads(line)
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            session_mode = event.get("permissionMode")
         for part in event.get("message", {}).get("content", []) if event.get("type") in ("assistant", "user") else []:
             if not isinstance(part, dict):
                 continue
@@ -88,26 +98,47 @@ for command, result in refusals:
     if SHAPE.match(first_line(command)) and any(phrase in result for phrase in UNREADABLE):
         failures.append(f"a call in the skill's shape was refused as unreadable: {first_line(command)}")
 
-# A command's state, as Claude Code's call reads it back from wait, as the opencode plugin adds it
-# to a write's result, or as an execute script hands it back among its own values.
-ran = any(
-    not e and re.search(r'^(completed|error)\b|^terminalfs: \S+ (completed|error)|"(completed|error)"', r.strip(), re.M)
-    for c, r, e in calls if "/ctl/" in c or "ctl/" in c)
+# What happened, read off the project rather than the transcript: build.sh notes each run, and
+# whether it was inside a session's tree, and out/ is what the task tries to remove.
+try:
+    runs = open(os.path.join(project, ".ran")).read().split()
+except FileNotFoundError:
+    runs = []
+through_tree = "tree" in runs
+outside_tree = "shell" in runs
+rm_held = os.path.exists(os.path.join(project, "out", "keep"))
+asked = any("needs approval" in r for c, r in refusals)
 
-if scenario == "run":
-    if not ran:
-        failures.append("no command was seen running through the tree")
-    if not any("rm" in c and "Bash(rm *)" in r for c, r in refusals) and harness == "claude":
-        failures.append("the deny rule Bash(rm *) was never seen refusing rm")
-    if harness == "opencode" and not any("rm" in c and "'rm *'" in r for c, r in refusals):
-        failures.append("the deny rule rm * was never seen refusing rm")
-elif scenario == "ask":
-    if not any("needs approval" in r for c, r in refusals):
-        failures.append("no ask was seen, or it did not say it needs approval")
-    if ran:
-        failures.append("a command ran though no rule allowed it and nobody could approve it")
-    if not any(not e and "/cmd" in c and "ctl/" not in c for c, r, e in calls):
-        failures.append("no read of the tree was seen allowed")
+print(f"  build.sh ran: {'through the tree' if through_tree else 'not through the tree'}"
+      f"{', and outside it too' if outside_tree else ''}; out/ {'still there' if rm_held else 'REMOVED'}")
+
+# What each scenario promises. run: a command no rule refuses runs, one a rule refuses does not.
+# ask: a command no rule decides waits for a person, and there is none. auto: Claude Code's
+# classifier decides such a command, so either outcome is reported and neither fails; opencode's
+# --auto approves it. Everywhere, a deny rule holds.
+expected = {
+    ("claude", "run"): True,
+    ("claude", "ask"): False,
+    ("claude", "acceptEdits"): False,
+    ("claude", "auto"): None,
+    ("opencode", "run"): True,
+    ("opencode", "ask"): False,
+    ("opencode", "auto"): True,
+}.get((harness, scenario), None)
+
+wanted = {"run": "bypassPermissions", "ask": "default", "acceptEdits": "acceptEdits", "auto": "auto"}.get(scenario)
+if harness == "claude" and session_mode != wanted:
+    failures.append(f"the session ran in {session_mode} mode, not {wanted}: this model may not offer it")
+if not rm_held:
+    failures.append("out/ was removed: the rm deny rule did not hold")
+if expected is True and not through_tree:
+    failures.append("build.sh never ran through the tree")
+if expected is False and through_tree:
+    failures.append("build.sh ran through the tree though no rule allowed it and nobody could approve it")
+if harness == "claude" and expected is False and not asked:
+    failures.append("no ask was seen, or it did not say it needs approval")
+if outside_tree:
+    print("  note: build.sh also ran outside the tree, with a shell tool; the model did not keep to the skill")
 
 for failure in failures:
     print(f"  FAIL: {failure}")

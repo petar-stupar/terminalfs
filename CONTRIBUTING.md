@@ -49,14 +49,26 @@ tests/live/run.sh              # Claude Code, then opencode; or name one
 ```
 
 It builds this branch, installs both plugins from it into a scratch directory, and gives a small
-model the same task in a scratch project: run a failing build through the tree and read its output
-in the same call, run an `rm` a deny rule refuses, list `ctl/`, and, in the default permission mode,
-a command no rule decides. It prints every refusal the hooks gave and fails on the ones that mean
-the hook misread a call in the skill's shape, or on a promise it never saw kept. A model takes a
-different path each time, so read what it prints as well as the verdict. Claude Code labels every refusal a
-hook gives `PreToolUse:Bash hook error:`; that is its wording for a deny, not the hook failing, and
-the reason after it is the hook's. It is not part of the gate:
-it needs logged-in harnesses, a mount (Linux, root or passwordless `sudo`), and calls a model.
+model one task in a scratch project, once per permission mode: run a failing build through the
+tree and read its output in the same call, run an `rm` that a deny rule refuses, and list `ctl/`.
+
+| Scenario | Claude Code | opencode | Expected |
+| --- | --- | --- | --- |
+| `run` | `bypassPermissions` | rules allow everything but `rm` | the build runs through the tree |
+| `ask` | `default` | `*` asks, `rm` is denied | the build asks, and with nobody to answer does not run |
+| `acceptEdits` | `acceptEdits` | — | the same as `ask`: it approves edits, not commands |
+| `auto` | `auto`, with Sonnet | `--auto`, same rules as `ask` | Claude Code's classifier decides, and either outcome is reported; opencode runs it |
+
+In every scenario `rm` is refused. Claude Code does not offer auto mode with every model and falls back to `default` without saying so, so the `auto` scenario runs with Sonnet and each Claude Code run is checked to have been in the mode it asked for. The checks read the project, not the model's account: `build.sh`
+notes in `.ran` whether it ran inside a session's tree, and `out/`, which the `rm` would remove,
+must still be there. From the transcript they take only that no call in the skill's shape was
+refused as unreadable, and that an ask says it needs approval. Every refusal the hooks gave is
+printed; a model takes a different path each time, so read those as well as the verdict. Claude
+Code labels every refusal a hook gives `PreToolUse:Bash hook error:`; that is its wording for a
+deny, not the hook failing, and the reason after it is the hook's.
+
+It is not part of the gate: it needs logged-in harnesses, a mount (Linux, root or passwordless
+`sudo`), and calls a model, seven runs in all.
 
 Claude Code runs as you are logged in, with the plugin loaded for the session only. opencode v2 runs
 from its own home, so it never touches yours; log in there once, with a key:
