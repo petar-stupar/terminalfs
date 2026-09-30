@@ -135,12 +135,52 @@ public sealed class CommandRegistry : IDisposable
         ArgumentNullException.ThrowIfNull(options);
 
         string root = options.OutputRoot
-            ?? Path.Combine(Path.GetTempPath(), "terminalfs", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            ?? Path.Combine(DefaultOutputParent(Environment.GetEnvironmentVariable), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-        Directory.CreateDirectory(root);
+        PrivateDirectory(Path.GetDirectoryName(root)!);
+        PrivateDirectory(root);
         SweepAbandoned(root);
 
         return new CommandRegistry(options, root);
+    }
+
+    /// <summary>
+    /// Where a server's output directory goes when nobody says: under this user's cache
+    /// directory rather than the shared temporary one.
+    /// </summary>
+    /// <remarks>
+    /// A command's output is whatever it printed, secrets included, and <c>/tmp</c> is shared by
+    /// every user on the machine: output there was readable by all of them, and the first user's
+    /// <c>/tmp/terminalfs</c> kept every other user's server from starting. On Windows the
+    /// temporary directory is already the user's own.
+    /// </remarks>
+    internal static string DefaultOutputParent(Func<string, string?> environment)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return Path.Combine(Path.GetTempPath(), "terminalfs");
+        }
+
+        string? cache = environment("XDG_CACHE_HOME");
+
+        return Path.Combine(
+            !string.IsNullOrEmpty(cache) && Path.IsPathRooted(cache)
+                ? cache
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache"),
+            "terminalfs-output");
+    }
+
+    /// <summary>Makes a directory only this user can open, or leaves one that is there.</summary>
+    internal static void PrivateDirectory(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(path);
+        }
+        else
+        {
+            Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     /// <summary>The command by that name, or null.</summary>

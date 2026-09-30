@@ -62,7 +62,7 @@ public sealed class Command
         CreatedAt = time.GetUtcNow();
         changedAt = CreatedAt;
 
-        System.IO.Directory.CreateDirectory(directory);
+        CommandRegistry.PrivateDirectory(directory);
 
         Stdout = new OutputFile(Path.Combine(directory, "stdout"), CreatedAt);
         Stderr = new OutputFile(Path.Combine(directory, "stderr"), CreatedAt);

@@ -31,11 +31,20 @@ public sealed class OutputFile : IDisposable
         Path = path;
         lastWrite = now;
 
-        writer = new FileStream(
-            path,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.ReadWrite | FileShare.Delete);
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.Create,
+            Access = FileAccess.Write,
+            Share = FileShare.ReadWrite | FileShare.Delete,
+        };
+
+        // What a command prints can be anything it can read, so only this user can read it back.
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+
+        writer = new FileStream(path, options);
     }
 
     /// <summary>Where the bytes are.</summary>
