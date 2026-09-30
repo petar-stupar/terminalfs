@@ -54,6 +54,35 @@ internal sealed class SessionHost : ISessionHost
             ?? throw new MountException($"could not start the server for session {id}");
     }
 
+    /// <summary>
+    /// Starts <c>terminalfs session stop --id <paramref name="id"/></c> in a session of its own,
+    /// and returns without waiting for it.
+    /// </summary>
+    /// <remarks>
+    /// For a caller that is given less time than a stop takes: Claude Code cancels the hooks at
+    /// the end of a session after a second and a half, and one a plugin provides cannot ask for
+    /// longer. A stop cut off there leaves the server running, or its record and directory behind,
+    /// so the stop runs on after the caller is gone, out of reach of anything that kills the
+    /// caller's process group.
+    /// </remarks>
+    internal static void StopDetached(string id)
+    {
+        var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false, WorkingDirectory = "/" };
+
+        foreach (string argument in (string[])
+            ["-c", "exec setsid \"$@\" </dev/null >/dev/null 2>&1", "terminalfs-stop", .. Self(), "session", "stop", "--id", id])
+        {
+            start.ArgumentList.Add(argument);
+        }
+
+        using Process? stopping = Process.Start(start);
+
+        if (stopping is null)
+        {
+            throw new MountException($"could not start stopping session {id}");
+        }
+    }
+
     /// <inheritdoc />
     public async Task<Func<string, int?>> ReadMountsAsync(CancellationToken cancellationToken)
     {

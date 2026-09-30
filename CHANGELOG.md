@@ -19,6 +19,22 @@ refuses a tag whose version has no section here.
   the commands a killed server left running, and with `--older-than <duration>` for live sessions
   that old. Linux only for now: the macOS bridge serves one tree at a time. Sessions need the
   settings file, `setsid`, and root or `sudo` for `mount` and `umount`.
+- **A Claude Code plugin: a tree per session, held to the session's own permission rules.**
+  `claude plugin marketplace add petar-stupar/terminalfs` and `claude plugin install
+  terminalfs@terminalfs`. Its hooks run `terminalfs hook claude session-start`, `session-end` and
+  `pre-tool-use`: the tree is mounted when a session starts and the agent told where, and a stop
+  is started when the session ends that outlives Claude Code's second and a half for those hooks. Claude Code checks its rules against the Bash call that writes a
+  command into the tree, not the command, so the hook reads the command back out and checks it
+  against the same `Bash(...)` rules from the managed, user, project and local settings files —
+  deny, then ask, then allow, on the whole command and each subcommand — and what no rule decides
+  follows the permission mode: `default` and `acceptEdits` ask, `bypassPermissions` runs,
+  `dontAsk` refuses, `auto` leaves it to auto mode's classifier, and `plan` refuses everything. A
+  write into a tree in any shape it cannot read a command out of, into another session's tree, or
+  through the variables the trees' directory came from is refused. Only rules in settings files
+  are read: command-line flags, a skill's `allowed-tools`, approvals for the session and managed
+  policy that is not a file are Claude Code's alone. It is a check an agent following its instructions stays inside,
+  not a boundary: the agent runs as the same user as the server.
+- **`$TERMINALFS_RUNTIME_DIR`** says where session trees live, before `$XDG_RUNTIME_DIR`.
 
 ### Changed
 
@@ -41,6 +57,9 @@ refuses a tag whose version has no section here.
 
 ### Fixed
 
+- **`Bash(ls *)` in the deny list matches `ls` as well as `ls -la`**, and still not `lsof`: a space
+  and a trailing `*` mean what `:*` means when the `*` is the rule's only one, which is how Claude
+  Code reads the same rule.
 - **`--listen tcp://127.0.0.1:0 --mount` mounts the port the server was given.** It used to mount
   the default port instead, where it found another server's tree or none.
 - **`--unmount` reads a mount's port whole.** A server on port 4000 recognised a mount of port

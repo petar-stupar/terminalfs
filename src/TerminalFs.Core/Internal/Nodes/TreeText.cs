@@ -307,8 +307,11 @@ internal static class TreeText
 
               """
             : """
-              Claude Code only finds skills under its own configuration directory, so copy
-              `terminalfs/SKILL.md` to `$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`
+              The terminalfs plugin for Claude Code brings this skill with it, starts a tree for
+              each session, and checks what runs through it against the session's permission
+              rules. Without the plugin, Claude Code only finds skills under its own
+              configuration directory, so copy `terminalfs/SKILL.md` to
+              `$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`
               (`~/.claude/skills/terminalfs/SKILL.md` by default).
 
               """);
@@ -536,8 +539,15 @@ internal static class TreeText
 
         Keep to the shape — `cat >` into `ctl/<name>`, the command in a heredoc quoted as
         `'CMD'`, then reads under `cmd/<name>/` — rather than `echo … >` or the Write tool. It is
-        the shape a permission check can read the command out of. The command can be several
-        lines, but none of them can be just `CMD`.
+        the shape a permission check can read the command out of: the terminalfs plugin checks it
+        against your permission rules as if you had run it with Bash, and refuses a write into
+        the tree in any other shape, or anything but reads after it in the same call. The command
+        can be several lines, but none of them can be just `CMD`. Write the path out in full each
+        time, not through a variable or after a `cd`: the check cannot read a command written
+        to a path it cannot see, and refuses the ones it notices.
+
+        A refusal says why. `denied by` names the rule and the settings file it is in; don't
+        reword the command to get round it.
 
         Read `wait` **before** `stdout`. `wait` blocks until the command stops and prints
         `completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that

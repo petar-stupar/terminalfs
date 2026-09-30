@@ -55,6 +55,29 @@ public sealed class SessionPathsTests
             SessionPaths.Resolve(Environment(("XDG_RUNTIME_DIR", runtime)), "home").Root);
     }
 
+    /// <summary>
+    /// For a machine that wants every agent's trees in a directory it chose, without moving what
+    /// else reads <c>$XDG_RUNTIME_DIR</c>.
+    /// </summary>
+    [Fact]
+    public void TerminalfsOwnRuntimeDirectoryComesFirst()
+    {
+        string runtime = Path.Combine(Path.GetTempPath(), "run-user");
+        string chosen = Path.Combine(Path.GetTempPath(), "sessions");
+
+        Assert.Equal(
+            Path.Combine(chosen, "terminalfs"),
+            SessionPaths.Resolve(
+                Environment(("XDG_RUNTIME_DIR", runtime), ("TERMINALFS_RUNTIME_DIR", chosen)),
+                "home").Root);
+
+        Assert.Equal(
+            Path.Combine(runtime, "terminalfs"),
+            SessionPaths.Resolve(
+                Environment(("XDG_RUNTIME_DIR", runtime), ("TERMINALFS_RUNTIME_DIR", "relative")),
+                "home").Root);
+    }
+
     [Fact]
     public void WithoutARuntimeDirectorySessionsLiveInTheCache()
     {

@@ -63,7 +63,8 @@ own, and both are called `terminalfs`:
 
 Either way a command costs one tool call rather than three. opencode reads skills straight off the
 mount: add `skills/opencode` under the mountpoint to `skills.paths`. Claude Code only finds skills
-under its own configuration directory, so copy `skills/claude-code/terminalfs/SKILL.md` to
+under its own configuration directory; the [plugin](#claude-code) brings the skill with it, and
+without the plugin, copy `skills/claude-code/terminalfs/SKILL.md` to
 `$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`, replacing `<mount>` in it if it is still there.
 
 A skill names the mountpoint outright when this server was told one — either because it did the
@@ -261,7 +262,8 @@ terminalfs session gc
 ```
 
 `start` returns once the tree is mounted and prints only its path, under `$XDG_RUNTIME_DIR/terminalfs`,
-or `$XDG_CACHE_HOME/terminalfs` (`~/.cache/terminalfs`) where that is not set. Starting a session that
+or `$XDG_CACHE_HOME/terminalfs` (`~/.cache/terminalfs`) where that is not set. `$TERMINALFS_RUNTIME_DIR`
+comes before both, for a machine that wants every agent's trees in a directory of its choosing. Starting a session that
 is already mounted prints the same path again and keeps the directory it was first started in.
 `stop` stops the server, which kills its commands, then unmounts and removes the directory, and is
 safe to run when there is nothing to stop. `gc` does the same for every session whose server is
@@ -271,9 +273,65 @@ away without stopping theirs.
 Sessions are Linux-only for now. They need the settings file (`terminalfs --init-settings`),
 `setsid`, and root to mount — through `sudo` for `mount` and `umount` unless you are root already.
 Each session only knows the runtime directory it was started under, so run `stop` and `gc` with the
-same `XDG_RUNTIME_DIR` as `start`. Sessions separate agents, not users: every tree runs commands as
+same runtime directory as `start`. Sessions separate agents, not users: every tree runs commands as
 you, so a command run through one session can reach another session's tree like any other file of
 yours.
+
+### Claude Code
+
+The plugin in this repository gives each Claude Code session a tree of its own and holds what the
+session runs through it to the session's own permission rules:
+
+```sh
+claude plugin marketplace add petar-stupar/terminalfs
+claude plugin install terminalfs@terminalfs
+```
+
+It needs `terminalfs` on the `PATH` and whatever sessions need. Without the binary the hooks fail,
+and Claude Code reports that and carries on with no tree and no check. When a session starts, its
+tree is mounted and the agent is told where; when it ends, a stop is started that runs on after
+Claude Code has gone, since the hooks at the end of a session get a second and a half. The agent gets
+the Claude Code skill, which writes a command and reads what it did in one Bash call:
+
+```sh
+cat > <mount>/ctl/build <<'CMD'
+dotnet build 2>&1 | tail -40
+CMD
+cat <mount>/cmd/build/wait; cat <mount>/cmd/build/stdout
+```
+
+Claude Code checks its permission rules against that call — `cat` — not against the command inside
+it, so before the call runs, a hook reads the command back out and checks it against the same rules:
+`permissions.deny`, `ask` and `allow` from the managed, user, project and local settings files,
+deny first, whole command and every subcommand, as Claude Code would for the same command run with
+Bash. A deny refuses it with the rule and the file it is in, an ask asks, an allow runs it. Claude
+Code takes the hook's refusal or question over any allow rule of its own. Anything no rule decides
+follows the session's permission mode:
+
+| Mode | A command no rule decides |
+| --- | --- |
+| `default`, `acceptEdits` | asks |
+| `auto` | left to auto mode's classifier, which sees the whole call, command included |
+| `bypassPermissions` | runs |
+| `dontAsk` | refused |
+| `plan` | refused, as is everything else, until the plan is approved |
+
+The hook also refuses whatever it cannot read a command out of: a write into `ctl/` in any other
+shape, anything but reads after the command in the same call, an edit anywhere in a tree, a command
+that itself writes into a tree, another session's tree, the skill's shape aimed at a path it cannot
+read, and the trees' directory spelled through the variables it came from. Reading a session's own
+tree, and ending one of its commands, is allowed.
+
+The rules it reads are the ones in files. Rules given another way — `--allowedTools`,
+`--disallowedTools` and `--settings` on the command line, a skill's `allowed-tools`, a "yes, for this
+session" at a prompt, and managed policy delivered by MDM, the registry or the claude.ai console
+rather than as a file — are Claude Code's alone, and a command they would allow is asked about, or
+in `dontAsk` refused.
+
+**This is a check, not a boundary.** The agent runs as you, the same as the server: it can find
+another session's port in the runtime directory and speak 9P to it, and a path built at run time,
+reached through a link, or spelled a way the hook does not recognise is one it never sees. It keeps
+an agent that follows its instructions inside the rules you wrote for it.
 
 ### What it cannot do
 

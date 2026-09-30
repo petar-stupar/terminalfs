@@ -5,7 +5,10 @@ a person rather than derived.
 
 ## Cutting one
 
-1. Bump `<Version>` in [`Directory.Build.props`](../Directory.Build.props).
+1. Bump `<Version>` in [`Directory.Build.props`](../Directory.Build.props), and `version` in
+   [`plugins/terminalfs/.claude-plugin/plugin.json`](../plugins/terminalfs/.claude-plugin/plugin.json)
+   to match — a test holds them together, because Claude Code keeps an installed plugin at the
+   version it names until that changes.
 2. In [`CHANGELOG.md`](../CHANGELOG.md), rename `## [Unreleased]` to `## [<version>] — <date>`,
    open a fresh empty `## [Unreleased]` above it, and add the two link definitions at the foot.
    The section is the release notes, verbatim.

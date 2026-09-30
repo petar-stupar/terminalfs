@@ -1,0 +1,13 @@
+{
+  "name": "terminalfs",
+  "displayName": "terminalfs",
+  "version": "0.3.2",
+  "description": "A terminalfs tree for each Claude Code session, with the session's own permission rules applied to every command run through it",
+  "author": {
+    "name": "petar-stupar"
+  },
+  "homepage": "https://github.com/petar-stupar/terminalfs",
+  "repository": "https://github.com/petar-stupar/terminalfs",
+  "license": "MIT",
+  "keywords": ["shell", "terminal", "9p", "permissions"]
+}
