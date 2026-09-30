@@ -15,6 +15,7 @@
 // `terminalfs plugin install opencode` puts the plugin that goes with it where opencode finds it.
 
 import { spawn } from "node:child_process"
+import { createReadStream } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 
@@ -45,6 +46,27 @@ function terminalfs(event, input) {
   })
 }
 
+
+/** The most of a command's output a write's result carries: the end of it, which is where a build says how it went. */
+const shown = 64 * 1024
+
+/** The last `limit` bytes of `path`, and whether there was more before them; undefined if it cannot be read. */
+async function tail(path, limit) {
+  try {
+    let kept = Buffer.alloc(0)
+    let cut = false
+    for await (const chunk of createReadStream(path)) {
+      kept = Buffer.concat([kept, chunk])
+      if (kept.length > limit) {
+        kept = kept.subarray(kept.length - limit)
+        cut = true
+      }
+    }
+    return { text: kept.toString("utf8"), cut }
+  } catch {
+    return undefined
+  }
+}
 
 /** The text a tool result carries, with `more` added to it. */
 function appended(content, more) {
@@ -225,7 +247,10 @@ export default {
       const read = (file) => readFile(`${tree.mount}/cmd/${name}/${file}`, "utf8").catch(() => undefined)
       const state = (await read("wait"))?.trim()
       const exit = (await read("exitcode"))?.trim()
-      const stdout = (await read("stdout")) ?? ""
+      const output = await tail(`${tree.mount}/cmd/${name}/stdout`, shown)
+      const stdout = output?.cut
+        ? `[only the last ${shown / 1024} KiB; all of it is in ${tree.mount}/cmd/${name}/stdout]\n${output.text}`
+        : (output?.text ?? "")
 
       event.result.content = appended(
         event.result.content,
