@@ -20,8 +20,9 @@ files. Nothing is on disk: `cmd/build/` is the server's account of the command, 
 Built on [`ninep`](https://github.com/petar-stupar/9p-csharp), the 9P implementation for .NET.
 
 > **This runs commands as you**, with your shell, environment and credentials. The server binds
-> loopback only, and the rules below refuse commands before they run, but none of it is a sandbox.
-> See [Permissions](#permissions).
+> loopback only, which every user on the machine can reach, and the rules below refuse commands
+> before they run, but none of it is a sandbox. See [Permissions](#permissions) and
+> [Limits](#limits).
 
 ## Install
 
@@ -214,6 +215,8 @@ The rules keep an agent that follows its instructions inside what you wrote for 
 - Sessions, and so the plugins, are Linux-only for now.
 - A session tree stays until its session ends. `terminalfs session gc --older-than 12h` clears up
   the ones an agent left behind.
+- Loopback is not private to you: every user on the machine can connect to a tree's port and run
+  commands as you. Run terminalfs only where you are the only user.
 
 ## Options
 

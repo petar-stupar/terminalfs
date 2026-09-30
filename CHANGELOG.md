@@ -97,6 +97,16 @@ refuses a tag whose version has no section here.
   the default port instead, where it found another server's tree or none.
 - **`--unmount` reads a mount's port whole.** A server on port 4000 recognised a mount of port
   40001 as its own.
+- **Command output is readable by its user alone.** It was written under `/tmp/terminalfs/<pid>`
+  with default modes, so every user on the machine could read what a command printed, and the
+  first user's `/tmp/terminalfs` kept anyone else's server from starting. It now goes under
+  `$XDG_CACHE_HOME/terminalfs-output` (`~/.cache/terminalfs-output`), in directories only the
+  user can open; Windows keeps its temporary directory, which is the user's own.
+- **`--keep 0` no longer breaks a write tool that creates its file first.** A name nobody has
+  written to yet is held for at least ten seconds, so the write after an empty create finds it.
+- **A command whose output cannot be made no longer takes the server down.** A full disk or no
+  file handles left, met while a written name was starting, ended the process from a timer, or left
+  the name stuck in `/ctl` for good. The name is given back and the reason logged.
 
 ## [0.3.2] — 2026-09-22
 
