@@ -9,6 +9,7 @@ using TerminalFs.Core;
 using TerminalFs.Core.Permissions;
 using TerminalFs.Internal.Hooks;
 using TerminalFs.Internal.Mount;
+using TerminalFs.Internal.Plugins;
 using TerminalFs.Internal.Server;
 using TerminalFs.Internal.Sessions;
 
@@ -27,7 +28,10 @@ internal static class Program
         {
             await Console.Error.WriteLineAsync("terminalfs: " + exception.Message).ConfigureAwait(false);
             await Console.Error.WriteLineAsync(
-                    IsSession(args) ? SessionOptions.Usage : args is ["hook", ..] ? HookUsage : CliOptions.Usage)
+                    IsSession(args) ? SessionOptions.Usage
+                    : args is ["hook", ..] ? HookUsage
+                    : args is ["plugin", ..] ? Plugins.Usage
+                    : CliOptions.Usage)
                 .ConfigureAwait(false);
 
             return 2;
@@ -70,6 +74,11 @@ internal static class Program
         if (args is ["hook", ..])
         {
             return await HookAsync(args[1..]).ConfigureAwait(false);
+        }
+
+        if (args is ["plugin", ..])
+        {
+            return Plugin(args[1..]);
         }
 
         CliOptions options = CliOptions.Parse(args);
@@ -218,6 +227,38 @@ internal static class Program
         }
     }
 
+    /// <summary><c>terminalfs plugin install claude|opencode [--dir &lt;dir&gt;]</c>.</summary>
+    private static int Plugin(string[] args)
+    {
+        if (args is [] or ["--help" or "-h"] or ["install", "--help" or "-h"])
+        {
+            Console.WriteLine(Plugins.Usage);
+
+            return 0;
+        }
+
+        PluginHarness harness = args switch
+        {
+            ["install", "claude", ..] => PluginHarness.Claude,
+            ["install", "opencode", ..] => PluginHarness.Opencode,
+            _ => throw new CliUsageException("plugin: say 'install claude' or 'install opencode'"),
+        };
+
+        string directory = args[2..] switch
+        {
+            [] => Plugins.DefaultDirectory(
+                harness,
+                Environment.GetEnvironmentVariable,
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)),
+            ["--dir", { Length: > 0 } dir] => dir,
+            _ => throw new CliUsageException("plugin install: the only option is --dir <dir>"),
+        };
+
+        Console.WriteLine(Plugins.Install(harness, directory));
+
+        return 0;
+    }
+
     /// <summary>Starts session <paramref name="id"/>, or finds it started, and returns where its tree is.</summary>
     private static async Task<string> StartSessionAsync(Sessions sessions, string id, string workingDirectory)
     {
@@ -252,21 +293,51 @@ internal static class Program
     /// </remarks>
     private static async Task<int> HookAsync(string[] args)
     {
-        if (args is ["--help" or "-h"] or ["claude", "--help" or "-h"])
+        if (args is ["--help" or "-h"] or ["claude" or "opencode", "--help" or "-h"])
         {
             Console.WriteLine(HookUsage);
 
             return 0;
         }
 
-        if (args is not ["claude", "session-start" or "session-end" or "pre-tool-use"])
+        if (args is not (["claude", "session-start" or "session-end" or "pre-tool-use"]
+            or ["opencode", "session-start" or "session-end" or "check" or "skill"]))
         {
-            throw new CliUsageException("hook: say 'claude session-start', 'claude session-end' or 'claude pre-tool-use'");
+            throw new CliUsageException(
+                "hook: say 'claude session-start|session-end|pre-tool-use' or 'opencode session-start|session-end|check|skill'");
         }
 
         string json = await Console.In.ReadToEndAsync().ConfigureAwait(false);
+
+        if (args[1] == "skill")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, string> { ["content"] = PluginSkills.Opencode }));
+
+            return 0;
+        }
         SessionPaths paths = SessionPaths.Default;
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        bool claude = args[0] == "claude";
+
+        if (args[1] == "check")
+        {
+            try
+            {
+                Console.WriteLine(new OpencodeHook(paths, Environment.GetEnvironmentVariable, home)
+                    .Check(OpencodeCheck.Parse(json)).Json());
+            }
+#pragma warning disable CA1031 // As for Claude Code below: an answer, never an exit code.
+            catch (Exception exception)
+#pragma warning restore CA1031
+            {
+                Console.WriteLine(
+                    (json.Contains(paths.Root, StringComparison.Ordinal) || json.Contains("/terminalfs", StringComparison.Ordinal)
+                        ? new OpencodeDecision("deny", $"terminalfs could not check this call: {exception.Message}")
+                        : OpencodeDecision.None).Json());
+            }
+
+            return 0;
+        }
 
         if (args[1] == "pre-tool-use")
         {
@@ -307,7 +378,7 @@ internal static class Program
         }
         catch (JsonException exception)
         {
-            throw new MountException($"the {args[1]} hook's input is not what Claude Code sends: {exception.Message}");
+            throw new MountException($"the {args[1]} hook's input is not what {(claude ? "Claude Code" : "the opencode plugin")} sends: {exception.Message}");
         }
 
         if (!SessionPaths.IsValidId(input.SessionId))
@@ -333,6 +404,7 @@ internal static class Program
         var sessions = new Sessions(paths, new SessionHost(), Console.Error.WriteLine);
 
         string context;
+        string? mounted = null;
 
         try
         {
@@ -342,6 +414,7 @@ internal static class Program
             }
 
             string mountPath = await StartSessionAsync(sessions, input.SessionId, input.WorkingDirectory).ConfigureAwait(false);
+            mounted = mountPath;
 
             context = $"This session's terminalfs tree is mounted at {mountPath}. Wherever the terminalfs skill "
                 + $"writes <mount>, the path is {mountPath}.";
@@ -355,7 +428,7 @@ internal static class Program
             context = $"terminalfs could not start a tree for this session, so the terminalfs skill cannot be used: {exception.Message}";
         }
 
-        Console.WriteLine(ClaudeHook.SessionContext(context));
+        Console.WriteLine(claude ? ClaudeHook.SessionContext(context) : OpencodeHook.Started(mounted, context, paths.Root));
 
         return 0;
     }
@@ -365,13 +438,20 @@ internal static class Program
         usage: terminalfs hook claude session-start
                terminalfs hook claude session-end
                terminalfs hook claude pre-tool-use
+               terminalfs hook opencode session-start
+               terminalfs hook opencode session-end
+               terminalfs hook opencode check
+               terminalfs hook opencode skill
 
-        What the Claude Code plugin runs, with the hook's JSON on standard input.
+        What the Claude Code and opencode plugins run, with JSON on standard input.
 
           session-start   start this session's tree, and tell the agent where it is
           session-end     stop it
           pre-tool-use    check a command written to the tree against the session's
                           Claude Code permission rules, and refuse any other write into it
+          check           the same, for one of opencode's permission checks and the
+                          session's opencode rules
+          skill           the opencode skill, for the plugin to add
         """;
 
     /// <param name="options">What to serve and where.</param>

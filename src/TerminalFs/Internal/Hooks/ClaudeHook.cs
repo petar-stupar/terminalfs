@@ -118,7 +118,7 @@ internal sealed class ClaudeHook(SessionPaths paths, Func<string, string?> envir
 
         TreeCall call = input.ToolName switch
         {
-            "Bash" => TreeCalls.Bash(input.Tool("command") ?? string.Empty, paths, input.SessionId, Spellings()),
+            "Bash" => TreeCalls.Bash(input.Tool("command") ?? string.Empty, paths, input.SessionId, TreeCalls.Spellings(paths, environment, home)),
             "Write" when input.Tool("file_path") is { } path =>
                 TreeCalls.Write(path, input.Tool("content") ?? string.Empty, paths, input.SessionId),
             "Edit" or "MultiEdit" when input.Tool("file_path") is { } path => TreeCalls.Edit(path, paths),
@@ -189,37 +189,6 @@ internal sealed class ClaudeHook(SessionPaths paths, Func<string, string?> envir
                 _ => new ClaudeDecision("ask", $"Run through terminalfs: {shown}"),
             },
         };
-    }
-
-    /// <summary>
-    /// The sessions' directory written through the variables it came from, or <c>~</c>. A command
-    /// spelled that way reaches the tree without naming it, so it is refused rather than missed.
-    /// </summary>
-    private List<string> Spellings()
-    {
-        var spellings = new List<string>();
-
-        foreach (string variable in (string[])["TERMINALFS_RUNTIME_DIR", "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"])
-        {
-            string? value = variable == "HOME" ? home : environment(variable);
-
-            if (string.IsNullOrEmpty(value) || !paths.Root.StartsWith(value.TrimEnd('/') + "/", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            string rest = paths.Root[value.TrimEnd('/').Length..];
-
-            spellings.Add("$" + variable + rest);
-            spellings.Add("${" + variable + "}" + rest);
-
-            if (variable == "HOME")
-            {
-                spellings.Add("~" + rest);
-            }
-        }
-
-        return spellings;
     }
 
     private static string OneLine(string command)

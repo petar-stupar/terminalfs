@@ -158,7 +158,7 @@ public sealed class Draft
     /// nothing merged.
     /// </remarks>
     /// <value>
-    /// Once it has been decided the hazard is gone — a decided name cannot be opened again, by
+    /// Once it has been decided the hazard is gone — a decided name cannot be written again, by
     /// anyone — and the length is worth telling the truth about, because a client that writes a
     /// file and then checks what it wrote gets an answer rather than a silent zero.
     /// </value>
@@ -169,6 +169,21 @@ public sealed class Draft
             lock (gate)
             {
                 return text is null ? 0 : System.Text.Encoding.UTF8.GetByteCount(text);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The command written to it, once the name has been decided and while it waits to run; null
+    /// before then, and for a command that was refused.
+    /// </summary>
+    public string? Written
+    {
+        get
+        {
+            lock (gate)
+            {
+                return refusal is null ? text : null;
             }
         }
     }

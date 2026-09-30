@@ -61,10 +61,11 @@ own, and both are called `terminalfs`:
 | `/skills/opencode/terminalfs/SKILL.md` | one `execute` script writes `ctl/<name>` and reads `wait` and `stdout` |
 | `/skills/claude-code/terminalfs/SKILL.md` | one Bash call, in a fixed shape: `cat >` a heredoc into `ctl/<name>`, then `cat` `wait` and `stdout` |
 
-Either way a command costs one tool call rather than three. opencode reads skills straight off the
-mount: add `skills/opencode` under the mountpoint to `skills.paths`. Claude Code only finds skills
-under its own configuration directory; the [plugin](#claude-code) brings the skill with it, and
-without the plugin, copy `skills/claude-code/terminalfs/SKILL.md` to
+Either way a command costs one tool call rather than three. The plugins for
+[Claude Code](#claude-code) and [opencode](#opencode) bring their skill with them, taken from the
+binary rather than a mount, since the plugin is what starts the tree. Without a plugin, opencode
+reads skills straight off the mount: add `skills/opencode` under the mountpoint to `skills.paths`.
+Claude Code only finds skills under its own configuration directory, so copy `skills/claude-code/terminalfs/SKILL.md` to
 `$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`, replacing `<mount>` in it if it is still there.
 
 A skill names the mountpoint outright when this server was told one — either because it did the
@@ -94,6 +95,8 @@ EOF
 ```
 
 A name runs **once**. Once it has run, taking it again is refused until its directory is removed.
+Between the write and the run, reading `ctl/<name>` gives back the command as written, for a write
+tool that checks what it wrote; writing to it again is still refused.
 Sequencing belongs inside a command — `a && b | c` is one command.
 
 ### A name is only taken until something decides it
@@ -222,7 +225,8 @@ it is still being written. Remove it, or pick another name.
 curl -fsSL https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.sh | sh
 ```
 
-Installs to `~/.local/bin`. On Windows, `irm https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.ps1 | iex`.
+Installs to `~/.local/bin`. The plugins for [Claude Code](#claude-code) and [opencode](#opencode)
+come with the binary: `terminalfs plugin install claude|opencode` writes one out. On Windows, `irm https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.ps1 | iex`.
 
 ### From source
 
@@ -279,8 +283,17 @@ yours.
 
 ### Claude Code
 
-The plugin in this repository gives each Claude Code session a tree of its own and holds what the
-session runs through it to the session's own permission rules:
+The plugin gives each Claude Code session a tree of its own and holds what the session runs
+through it to the session's own permission rules. The binary carries the one that goes with it:
+
+```sh
+terminalfs plugin install claude
+```
+
+writes a marketplace holding the plugin to `$XDG_DATA_HOME/terminalfs/claude-code` (`--dir` puts it
+elsewhere) and prints the two commands that add it to Claude Code. After installing a newer
+terminalfs, run it again and then `claude plugin marketplace update terminalfs`. The repository is
+the same marketplace, if you would rather follow `main`:
 
 ```sh
 claude plugin marketplace add petar-stupar/terminalfs
@@ -332,6 +345,54 @@ in `dontAsk` refused.
 another session's port in the runtime directory and speak 9P to it, and a path built at run time,
 reached through a link, or spelled a way the hook does not recognise is one it never sees. It keeps
 an agent that follows its instructions inside the rules you wrote for it.
+
+### opencode
+
+The opencode plugin is the same for opencode (v2): a tree for each session, and the session's own
+permission rules applied to what runs through it.
+
+```sh
+terminalfs plugin install opencode
+```
+
+puts it in `$XDG_CONFIG_HOME/opencode/plugins/terminalfs/`, where opencode finds it when it next
+starts; run it again after installing a newer terminalfs. `--dir` puts it elsewhere, for naming in
+`plugins` in your opencode configuration. The plugin is one script, `plugins/opencode/index.js` in
+this repository, and it asks the binary for its skill, so the skill is always the one written for
+the terminalfs that runs. It needs `terminalfs` on the `PATH` and whatever sessions need.
+
+The tree is started before the session's first prompt and the agent told where it is, and it is
+stopped when the session is deleted or opencode's server stops. The agent gets the opencode skill,
+which writes a command and reads what it did in one `execute` script. opencode's code mode leaves
+its built-in file tools out, so the plugin copies `read` and `write` into it as `file_read` and
+`file_write`: the copies run the built-ins' own code, permission checks and all, a rule that
+switches a built-in off switches its copy off too, and the built-ins stay ordinary tools. The
+plugin's `codemode` option copies others, or none with `[]` — in the configuration, as
+`"plugins": [{ "package": "<path>/plugins/opencode", "options": { "codemode": ["read", "write", "grep"] } }]`.
+Writes into a tree from one script are checked one at a time; several at once are refused. A command written with the plain `write` tool gets its state, exit
+code and output added to the write's result, so it is one call that way too.
+
+opencode checks that write as an edit of a file, and its `shell` rules never see the command in it.
+The plugin hooks that check and answers it from the session's own rules, read as opencode reads
+them — the last rule that matches wins, every command in the line has to be allowed — so a deny
+refuses the write naming the rule, an ask shows opencode's own prompt with the command as the diff,
+and an allow lets it through. The same holds for a write made from an `execute` script, where a
+refusal reaches the script only as `Unable to write`, and the rule that refused it is added to the
+script's result. `permission.bash` rules count as `shell` rules, as opencode migrates them. A shell tool writing into the tree in the Claude Code skill's shape is checked the same way,
+and the same things are refused: another session's tree, an edit or a patch in a tree, and a write
+the plugin cannot read a command out of.
+
+The prompt is opencode's prompt for an edit, so an "always" answer saves what opencode saves for
+an edit: every edit in the project allowed from then on. The next terminalfs command is still asked
+about, because the plugin answers each one from the `shell` rules; to stop being asked, write a
+`shell` allow rule. Likewise "always" answers given to opencode's own shell tool are not seen here.
+
+A write's result waits for the command, up to the tree's `wait` timeout (25 seconds); a command
+still running then says so, and the rest is read from `cmd/<name>/`. A session keeps its tree, and
+its server, until the session is deleted or opencode's server stops; `terminalfs session gc
+--older-than <duration>` clears up the ones left behind by a server that ran for days. Like
+sessions themselves, this is Linux-only. The same caveat as for Claude Code applies: this is a check
+an agent following its instructions stays inside, not a boundary.
 
 ### What it cannot do
 

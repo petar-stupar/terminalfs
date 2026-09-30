@@ -125,6 +125,14 @@ fi
 
 echo "install.sh: installed $tag to $BIN_DIR/terminalfs"
 
+# The plugins are carried in the binary, so the one installed goes with it. Writing one out is
+# left to you: it changes how every session of that agent runs.
+for agent in claude opencode; do
+    if command -v "$agent" >/dev/null 2>&1; then
+        echo "install.sh: for $agent, run 'terminalfs plugin install $agent' (again after each upgrade)"
+    fi
+done
+
 case ":$PATH:" in
     *":$BIN_DIR:"*)
         echo "install.sh: run 'terminalfs --help'" ;;

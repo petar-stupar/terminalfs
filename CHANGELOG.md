@@ -34,10 +34,43 @@ refuses a tag whose version has no section here.
   are read: command-line flags, a skill's `allowed-tools`, approvals for the session and managed
   policy that is not a file are Claude Code's alone. It is a check an agent following its instructions stays inside,
   not a boundary: the agent runs as the same user as the server.
+- **An opencode plugin, in `plugins/opencode`, for opencode v2.** It gives each session a tree of
+  its own, started before the first prompt and stopped when the session is deleted or opencode's
+  server stops, with its path in the session's context and the opencode skill added to it. A
+  command written with the `write` tool to `ctl/<name>` is checked, inside opencode's own
+  permission check for that write, against the session's `shell` rules (and `permission.bash`,
+  which opencode migrates) as opencode would read them for its shell tool: a deny refuses the write
+  naming the rule, an ask shows opencode's prompt with the command as the diff, and an allow runs
+  it. The built-in `read` and `write` are made callable from `execute` as `file_read` and
+  `file_write` (the plugin's `codemode` option names more), so a script writes commands and reads
+  what they did in one turn; a write made on its own gets the command's state, exit code and
+  output added to its result. A write is judged on where opencode resolved its path to, however it was spelled.
+  Writes into another session's tree, edits and patches in a tree, and shell calls that write into
+  one in any shape but the skill's are refused, and a `cd` out of the project in a command is
+  asked about as opencode's shell tool would ask. An "always" answer to the prompt is opencode's
+  for an edit, and allows every edit in the project. `terminalfs hook opencode
+  session-start|session-end|check|skill` is what it runs: the skill comes from the binary, so
+  the plugin is `index.js` alone.
 - **`$TERMINALFS_RUNTIME_DIR`** says where session trees live, before `$XDG_RUNTIME_DIR`.
+- **`terminalfs plugin install claude|opencode [--dir <dir>]`: the plugins come with the binary.**
+  A plugin is what starts a session's tree, so it cannot be served from one; the binary carries
+  the plugin written for it instead. `opencode` writes the plugin to
+  `$XDG_CONFIG_HOME/opencode/plugins/terminalfs/`, where opencode finds it. `claude` writes a
+  marketplace laid out as the repository's to `$XDG_DATA_HOME/terminalfs/claude-code` and prints
+  the `claude plugin` commands that add it, since Claude Code installs plugins only from a
+  marketplace. The Claude Code skill in it is rendered from the program rather than copied.
+  Run it again after an upgrade.
 
 ### Changed
 
+- **The opencode skill's `execute` script uses opencode v2's own read and write.** v2's code mode
+  leaves its built-in file tools out; the plugin copies `read` and `write` into it as `file_read`
+  and `file_write`, sharing the built-ins' permission checks, and the script reads what they
+  return as `.content`. Without `execute`, one `write` whose result the plugin fills in with what
+  the command did. Where the skill does not name the tree, it says the session context does.
+- **Reading back a command that has been written, before it runs, gives the command.** A write tool
+  that checks what it wrote — opencode's does, at once — got `EEXIST` and reported a write that
+  failed, for a command that was about to run. Writing to the name again is still refused.
 - **A skill per harness: `/skills/opencode/terminalfs/SKILL.md` and
   `/skills/claude-code/terminalfs/SKILL.md`.** The cheapest way to run a command depends on the
   tools a harness has, and one skill describing every way was longer and followed worse. opencode's

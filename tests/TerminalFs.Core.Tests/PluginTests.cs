@@ -30,7 +30,8 @@ public sealed class PluginTests
 
     /// <summary>
     /// The plugin's skill is the one the tree serves to Claude Code when nobody has said where the
-    /// tree is: the session's own path arrives from the session-start hook instead.
+    /// tree is: the session's own path arrives from the session-start hook instead. The copy is
+    /// here for the marketplace in the repository; <c>terminalfs plugin install</c> renders its own.
     /// </summary>
     [Fact]
     public void ThePluginsSkillIsTheOneTheTreeServes()

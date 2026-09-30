@@ -279,6 +279,10 @@ public sealed class RenderTests : IDisposable
         Assert.Contains("The reads print that earlier command's state and output", text, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A command, and the reads of what it did, in one execute script: the shape that makes a
+    /// command one turn. The single write, whose result the plugin fills in, is the fallback.
+    /// </summary>
     [Fact]
     public async Task TheOpenCodeSkillWritesAndReadsInOneExecuteScript()
     {
@@ -287,6 +291,7 @@ public sealed class RenderTests : IDisposable
         Assert.Contains("inside a single `execute` script", text, StringComparison.Ordinal);
         Assert.Contains("await tools.file_write({ path: `${M}/ctl/${n}`", text, StringComparison.Ordinal);
         Assert.Contains("const M = \"<mount>\"", text, StringComparison.Ordinal);
+        Assert.Contains("Without `execute`, write the command with the `write` tool", text, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -325,10 +330,8 @@ public sealed class RenderTests : IDisposable
         string openCode = await Skill(workspace, "opencode");
 
         Assert.Contains("<mount>/ctl/<name>", openCode, StringComparison.Ordinal);
-        Assert.Contains(
-            "the path you read this skill from,\nwithout `/skills/opencode/terminalfs/SKILL.md` on the end",
-            openCode,
-            StringComparison.Ordinal);
+        Assert.Contains("Your session context names it", openCode, StringComparison.Ordinal);
+        Assert.Contains("without `/skills/opencode/terminalfs/SKILL.md` on the end", openCode, StringComparison.Ordinal);
 
         Assert.Contains(
             "how to work out the",

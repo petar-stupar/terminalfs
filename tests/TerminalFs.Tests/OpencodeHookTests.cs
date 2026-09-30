@@ -1,0 +1,234 @@
+using System.Text.Json;
+using TerminalFs.Internal.Hooks;
+using TerminalFs.Internal.Sessions;
+
+namespace TerminalFs.Tests;
+
+/// <summary>
+/// What the opencode plugin is told to do with one of opencode's permission checks: a write of a
+/// command to the session's tree is held to the session's shell rules, and nothing else reaches the
+/// tree.
+/// </summary>
+public sealed class OpencodeHookTests
+{
+    private const string Session = "ses_2a9f0c1d";
+
+    private readonly SessionPaths paths = new("/run/user/1000/terminalfs");
+
+    public OpencodeHookTests() =>
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "session trees and the commands that name them are POSIX");
+
+    private string Tree => paths.MountPath(Session);
+
+    private OpencodeDecision Check(string action, string? tool, object? input, object[]? rules = null, string[]? resources = null) =>
+        new OpencodeHook(paths, _ => null, "/home/agent").Check(OpencodeCheck.Parse(JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["session_id"] = Session,
+            ["directory"] = "/home/agent/project",
+            ["action"] = action,
+            // Where opencode resolved the tool's path to, as it sends it for the edit check.
+            ["resources"] = resources ?? (action == "edit" && input is not null
+                && JsonSerializer.SerializeToElement(input).TryGetProperty("path", out JsonElement path)
+                    ? [Path.GetFullPath(path.GetString()!, "/home/agent/project")]
+                    : []),
+            ["tool"] = tool,
+            ["input"] = input,
+            ["rules"] = rules ?? [new { action = "*", resource = "*", effect = "allow" }],
+        })));
+
+    private static object Rule(string resource, string effect) => new { action = "shell", resource, effect };
+
+    [Fact]
+    public void AWrittenCommandIsHeldToTheShellRules()
+    {
+        object[] rules = [Rule("*", "ask"), Rule("dotnet *", "allow"), Rule("sudo *", "deny")];
+
+        Assert.Equal("allow", Check("edit", "write", new { path = $"{Tree}/ctl/build", content = "dotnet build" }, rules).Effect);
+        Assert.Equal("ask", Check("edit", "write", new { path = $"{Tree}/ctl/make", content = "make" }, rules).Effect);
+
+        OpencodeDecision denied = Check("edit", "write", new { path = $"{Tree}/ctl/root", content = "sudo ls" }, rules);
+
+        Assert.Equal("deny", denied.Effect);
+        Assert.Contains("'sudo *'", denied.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// opencode's own defaults allow everything, so a session with no shell rules runs what it is
+    /// told, exactly as it would with its shell tool.
+    /// </summary>
+    [Fact]
+    public void WithOpencodesDefaultsACommandRuns() =>
+        Assert.Equal("allow", Check("edit", "write", new { path = $"{Tree}/ctl/x", content = "make" }).Effect);
+
+    [Fact]
+    public void AnotherSessionsTreeIsRefused()
+    {
+        string other = paths.MountPath("ses_other");
+
+        Assert.Equal("deny", Check("edit", "write", new { path = $"{other}/ctl/x", content = "ls" }).Effect);
+        Assert.Equal("deny", Check("external_directory", null, null, resources: [$"{other}/ctl/*"]).Effect);
+    }
+
+    /// <summary>
+    /// The write asks about the directory first. For the session's own tree that question is the
+    /// command's, and is answered when the write itself is checked.
+    /// </summary>
+    [Fact]
+    public void TheSessionsOwnTreeIsNotAskedAboutTwice()
+    {
+        Assert.Equal("allow", Check("external_directory", null, null, resources: [$"{Tree}/ctl/*"]).Effect);
+
+        // Even for a command that will be asked about: the question belongs to the edit check,
+        // whose prompt shows the command.
+        Assert.Equal(
+            "allow",
+            Check("external_directory", "write", new { path = $"{Tree}/ctl/m", content = "make" }, [Rule("*", "ask")], [$"{Tree}/ctl/*"]).Effect);
+        Assert.Equal(
+            "ask",
+            Check("edit", "write", new { path = $"{Tree}/ctl/m", content = "make" }, [Rule("*", "ask")], [$"{Tree}/ctl/m"]).Effect);
+    }
+
+    [Fact]
+    public void ATreeIsNeitherEditedNorPatched()
+    {
+        Assert.Equal("deny", Check("edit", "edit", new { path = $"{Tree}/ctl/x", oldString = "a", newString = "b" }).Effect);
+        Assert.Equal("deny", Check("edit", "patch", new { patchText = $"*** Begin Patch\n*** Add File: {Tree}/ctl/x\n+ls\n*** End Patch" }).Effect);
+    }
+
+    [Fact]
+    public void AShellCallInTheSkillsShapeIsCheckedLikeAWrite()
+    {
+        string command = $"cat > {Tree}/ctl/x <<'CMD'\nsudo ls\nCMD\ncat {Tree}/cmd/x/wait; cat {Tree}/cmd/x/stdout";
+
+        Assert.Equal("deny", Check("shell", "shell", new { command }, [Rule("*", "allow"), Rule("sudo *", "deny")]).Effect);
+    }
+
+    [Fact]
+    public void ARelativePathIsResolvedAgainstTheSessionsDirectory() =>
+        Assert.Equal("none", Check("edit", "write", new { path = "notes/ctl/x", content = "sudo ls" }).Effect);
+
+    /// <summary>
+    /// What opencode writes is where it resolved the path to, and a spelling read differently
+    /// here — ~ is not a directory name to opencode — would be a write nobody checked.
+    /// </summary>
+    [Fact]
+    public void AWriteIsJudgedOnWhereOpencodeResolvedItTo()
+    {
+        object[] rules = [Rule("*", "allow"), Rule("uname *", "deny")];
+
+        OpencodeDecision tilde = Check(
+            "edit",
+            "write",
+            new { path = "~/../../run/user/1000/terminalfs/" + Session + "/ctl/x", content = "uname -a" },
+            rules,
+            [$"{Tree}/ctl/x"]);
+
+        Assert.Equal("deny", tilde.Effect);
+
+        OpencodeDecision patched = Check(
+            "edit",
+            "patch",
+            new { patchText = "*** Begin Patch\n*** Add File: ../x/ctl/y\n+uname -a\n*** End Patch" },
+            rules,
+            [$"{Tree}/ctl/y"]);
+
+        Assert.Equal("deny", patched.Effect);
+    }
+
+    /// <summary>
+    /// The session's own tree is answered here; another directory asked about in the same
+    /// question is still opencode's to ask about.
+    /// </summary>
+    [Fact]
+    public void AnswerForTheOwnTreeDoesNotCoverOtherDirectories() =>
+        Assert.Equal("none", Check("external_directory", "shell", new { command = "ls" }, resources: [$"{Tree}/cmd/x/*", "/etc/*"]).Effect);
+
+    /// <summary>opencode asks before its shell tool changes to a directory outside the project.</summary>
+    [Fact]
+    public void AChangeOfDirectoryOutOfTheProjectIsAskedAboutAsOpencodeWould()
+    {
+        object[] rules = [Rule("*", "allow"), new { action = "external_directory", resource = "*", effect = "ask" }];
+
+        Assert.Equal("ask", Check("edit", "write", new { path = $"{Tree}/ctl/x", content = "cd /etc && ls" }, rules).Effect);
+        Assert.Equal("allow", Check("edit", "write", new { path = $"{Tree}/ctl/y", content = "cd src && ls" }, rules).Effect);
+    }
+
+    private OpencodeDecision CheckCalls(string action, object[] calls, string[] resources, object[]? rules = null) =>
+        new OpencodeHook(paths, _ => null, "/home/agent").Check(OpencodeCheck.Parse(JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["session_id"] = Session,
+            ["directory"] = "/home/agent/project",
+            ["action"] = action,
+            ["resources"] = resources,
+            ["calls"] = calls,
+            ["rules"] = rules ?? [Rule("*", "allow"), Rule("uname *", "deny")],
+        })));
+
+    /// <summary>
+    /// A script run by execute makes its calls under its own id, so a check arrives with every call
+    /// under way; the one write among them is the one it is about, and the rest are no guide.
+    /// </summary>
+    [Fact]
+    public void AWriteFromAScriptIsJudgedOnItsOwnContent()
+    {
+        object[] calls =
+        [
+            new { tool = "execute", input = new { code = "..." } },
+            new { tool = "file_read", input = new { path = $"{Tree}/cmd/a/wait" } },
+            new { tool = "file_write", input = new { path = $"{Tree}/ctl/b", content = "uname -a" } },
+        ];
+
+        OpencodeDecision decision = CheckCalls("edit", calls, [$"{Tree}/ctl/b"]);
+
+        Assert.Equal("deny", decision.Effect);
+        Assert.Equal(2, decision.Call);
+    }
+
+    /// <summary>
+    /// Two writes under way at once are not told apart by path: a path can be spelled to read one
+    /// way here and another to opencode, and a wrong match would check one command and run the other.
+    /// </summary>
+    [Fact]
+    public void SeveralWritesAtOnceAreRefusedRatherThanGuessedBetween()
+    {
+        object[] calls =
+        [
+            new { tool = "file_write", input = new { path = $"{Tree}/ctl/t/", content = "uname -a" } },
+            new { tool = "file_write", input = new { path = $"{Tree}/ctl/t", content = "echo fine" } },
+        ];
+
+        OpencodeDecision decision = CheckCalls("edit", calls, [$"{Tree}/ctl/t"]);
+
+        Assert.Equal("deny", decision.Effect);
+        Assert.Contains("one at a time", decision.Message, StringComparison.Ordinal);
+        Assert.Null(decision.Call);
+    }
+
+    [Fact]
+    public void AnEditUnderWayAlongsideAWriteKeepsTheTreeClosed()
+    {
+        object[] calls =
+        [
+            new { tool = "file_write", input = new { path = "/home/agent/project/notes", content = "echo fine" } },
+            new { tool = "edit", input = new { path = $"{Tree}/ctl/x", oldString = "a", newString = "b" } },
+        ];
+
+        Assert.Equal("deny", CheckCalls("edit", calls, [$"{Tree}/ctl/x"]).Effect);
+    }
+
+    [Fact]
+    public void ACheckThatDoesNotTouchTheTreesIsLeftToOpencode()
+    {
+        Assert.Equal("none", Check("edit", "write", new { path = "/home/agent/project/a.txt", content = "x" }).Effect);
+        Assert.Equal("none", Check("shell", "shell", new { command = "dotnet build" }).Effect);
+    }
+
+    [Fact]
+    public void AnAnswerIsTheJsonThePluginReads()
+    {
+        using JsonDocument output = JsonDocument.Parse(new OpencodeDecision("deny", "because").Json());
+
+        Assert.Equal("deny", output.RootElement.GetProperty("effect").GetString());
+        Assert.Equal("because", output.RootElement.GetProperty("message").GetString());
+    }
+}

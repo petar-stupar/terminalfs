@@ -235,7 +235,8 @@ internal static class TreeText
           ```
 
           A name runs **once**, including one that was itself refused. Taking one that has
-          already run is refused until its directory is removed.
+          already run is refused until its directory is removed. Between the write and the
+          run, reading `/ctl/<name>` gives back the command as written.
 
           Until a command has been written and the file closed, the name is only taken: nothing
           runs, and `/cmd/<name>/` is not there. So you may create the file and write to it later,
@@ -301,9 +302,11 @@ internal static class TreeText
         + "- [terminalfs](terminalfs/index.md) — running commands through this filesystem.\n\n"
         + (harness == SkillHarness.OpenCode
             ? """
-              opencode reads skills straight off the mount. Add this directory — `skills/opencode`
-              under wherever the tree is mounted — to `skills.paths` in its configuration, and
-              nothing needs copying.
+              The terminalfs plugin for opencode brings this skill with it, starts a tree for each
+              session, and checks what runs through it against the session's permission rules.
+              Without the plugin, opencode can read skills straight off the mount: add this
+              directory — `skills/opencode` under wherever the tree is mounted — to the skills
+              paths in its configuration, and nothing needs copying.
 
               """
             : """
@@ -332,7 +335,8 @@ internal static class TreeText
             (null, true) =>
                 """
                 The paths in it are written `<mount>`, and it tells opencode how to work out the
-                real one from where it read the skill.
+                real one: from the session context the terminalfs plugin gives it, or from where it
+                read the skill.
 
                 """,
             (null, false) =>
@@ -381,7 +385,8 @@ internal static class TreeText
         {
             (null, true) =>
                 """
-                `<mount>` below is where the tree is mounted: the path you read this skill from,
+                `<mount>` below is where the tree is mounted. Your session context names it; if
+                nothing does and you read this skill from a tree, it is the path you read it from
                 without `/skills/opencode/terminalfs/SKILL.md` on the end.
                 """,
             (null, false) =>
@@ -427,16 +432,18 @@ internal static class TreeText
 
         ## Run a command — in one tool call
 
-        Do the write and the reads inside a single `execute` script. Never split them across
-        turns: every extra turn re-bills the whole conversation, so a command should cost one
-        turn, not two or three.
+        Do the write and the reads inside a single `execute` script, with `tools.file_write` and
+        `tools.file_read` — the terminalfs plugin puts opencode's own write and read there. Never
+        split them across turns: every extra turn re-bills the whole conversation, so a command
+        should cost one turn, not two or three. Several commands can share one script; await each
+        write to the tree before the next, since writes to it at once are refused.
 
         ```js
         const M = "<mount>", n = "build"; // name: letters, digits, _ - . max 64
         await tools.file_write({ path: `${M}/ctl/${n}`, content: "dotnet build 2>&1 | tail -40" });
-        const state = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/wait`     })).content;
-        const out   = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/stdout`   })).content;
-        const code  = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/exitcode` })).content;
+        const state = (await tools.file_read({ path: `${M}/cmd/${n}/wait`     })).content;
+        const out   = (await tools.file_read({ path: `${M}/cmd/${n}/stdout`   })).content;
+        const code  = (await tools.file_read({ path: `${M}/cmd/${n}/exitcode` })).content;
         return { state, code, out };
         ```
 
@@ -445,8 +452,15 @@ internal static class TreeText
         grows, so reading it first silently returns partial output. Add `stderr` only when you
         need it.
 
-        Without a code-mode tool the same command costs three calls — write `ctl/<name>`, read
-        `wait`, read `stdout`. Still do not skip `wait`.
+        Without `execute`, write the command with the `write` tool on its own: with the plugin, its
+        result also carries what the command did — how it ended, its exit code and its output — so
+        it is still one call. Without the plugin, follow it with reads of `wait`, then `stdout`.
+
+        The plugin checks each command against your `shell` permission rules, as if you had run
+        it with a shell tool, before the write lands, and opencode may ask the user first. A
+        refused write names the rule; inside a script it throws only `Unable to write`, and the
+        rule is given after the script's result. Don't reword the command to get round it. Write
+        the path out in full, as above.
 
         ## One name, one command
 
@@ -463,7 +477,7 @@ internal static class TreeText
           inline script is billed as generated text every time you send it. If you genuinely need
           a script, write it to a file once and re-run it by path.
         - Bound the output in the command itself — `| tail -40`, `| head`, `grep -c`, `wc -l`.
-        - For a large result, page it with `file_read`'s `offset`/`limit` instead of pulling it
+        - For a large result, page `stdout` with the read tool's range instead of pulling it
           whole.
         - Pick one mechanism per task. If you are using terminalfs, do not also search the same
           files with native `grep`/`read` tools; every switch is another turn.

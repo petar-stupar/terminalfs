@@ -26,7 +26,7 @@ internal sealed class ControlHandler(TerminalControl control, TerminalTree tree)
     /// nothing to merge.
     /// </para>
     /// <para>
-    /// Once the name has been decided that hazard is gone, because it cannot be opened again by
+    /// Once the name has been decided that hazard is gone, because it cannot be written again by
     /// anyone. The length is then worth telling the truth about: a client that writes a file
     /// atomically stats it afterwards to check what it wrote, and a zero there is a write it
     /// reports as having silently failed — for a command that in fact ran.
@@ -51,6 +51,15 @@ internal sealed class ControlHandler(TerminalControl control, TerminalTree tree)
         OpenFlags flags,
         CancellationToken cancellationToken = default)
     {
+        // Reading back a command that has been written, before it runs. A write tool that checks
+        // what it wrote does this at once, and an EEXIST here is reported to the agent as a write
+        // that failed, for a command that is about to run. Nothing can be written through this,
+        // so the name still runs once.
+        if (mode == OpenMode.Read && control.Written is { } written)
+        {
+            return ValueTask.FromResult<IOpenFile>(new WrittenCommand(System.Text.Encoding.UTF8.GetBytes(written)));
+        }
+
         try
         {
             return ValueTask.FromResult<IOpenFile>(new ControlChannel(control.Open()));
@@ -118,4 +127,41 @@ internal sealed class ControlHandler(TerminalControl control, TerminalTree tree)
     /// <inheritdoc />
     public ValueTask FsyncAsync(bool dataOnly, CancellationToken cancellationToken = default) =>
         ValueTask.CompletedTask;
+
+    /// <summary>A read-only open of a command that has been written and is waiting to run.</summary>
+    private sealed class WrittenCommand(ReadOnlyMemory<byte> content) : IOpenFile
+    {
+        /// <inheritdoc />
+        public ValueTask<int> ReadAsync(
+            ulong offset,
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (offset >= (ulong)content.Length)
+            {
+                return ValueTask.FromResult(0);
+            }
+
+            int at = (int)offset;
+            int count = Math.Min(buffer.Length, content.Length - at);
+
+            content.Slice(at, count).CopyTo(buffer);
+
+            return ValueTask.FromResult(count);
+        }
+
+        /// <inheritdoc />
+        public ValueTask<int> WriteAsync(
+            ulong offset,
+            ReadOnlyMemory<byte> data,
+            CancellationToken cancellationToken = default) =>
+            throw new NinePException(NinePError.FromErrno(Errno.EBADF));
+
+        /// <inheritdoc />
+        public ValueTask<ulong> GetSizeAsync(CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult((ulong)content.Length);
+
+        /// <inheritdoc />
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }
