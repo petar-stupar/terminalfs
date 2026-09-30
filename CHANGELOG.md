@@ -41,8 +41,10 @@ refuses a tag whose version has no section here.
   permission check for that write, against the session's `shell` rules (and `permission.bash`,
   which opencode migrates) as opencode would read them for its shell tool: a deny refuses the write
   naming the rule, an ask shows opencode's prompt with the command as the diff, and an allow runs
-  it, after which the write's result carries the command's state, exit code and output — one call
-  per command. A write is judged on where opencode resolved its path to, however it was spelled.
+  it. The built-in `read` and `write` are made callable from `execute` as `file_read` and
+  `file_write` (the plugin's `codemode` option names more), so a script writes commands and reads
+  what they did in one turn; a write made on its own gets the command's state, exit code and
+  output added to its result. A write is judged on where opencode resolved its path to, however it was spelled.
   Writes into another session's tree, edits and patches in a tree, and shell calls that write into
   one in any shape but the skill's are refused, and a `cd` out of the project in a command is
   asked about as opencode's shell tool would ask. An "always" answer to the prompt is opencode's
@@ -52,10 +54,11 @@ refuses a tag whose version has no section here.
 
 ### Changed
 
-- **The opencode skill writes a command with the `write` tool**, in one call whose result the
-  plugin fills in with what the command did, rather than an `execute` script: opencode v2's code
-  mode cannot write files. Without the plugin it reads `wait`, then `stdout`. Where the skill does
-  not name the tree, it says the session context does.
+- **The opencode skill's `execute` script uses opencode v2's own read and write.** v2's code mode
+  leaves its built-in file tools out; the plugin copies `read` and `write` into it as `file_read`
+  and `file_write`, sharing the built-ins' permission checks, and the script reads what they
+  return as `.content`. Without `execute`, one `write` whose result the plugin fills in with what
+  the command did. Where the skill does not name the tree, it says the session context does.
 - **Reading back a command that has been written, before it runs, gives the command.** A write tool
   that checks what it wrote — opencode's does, at once — got `EEXIST` and reported a write that
   failed, for a command that was about to run. Writing to the name again is still refused.

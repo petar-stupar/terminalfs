@@ -5,21 +5,36 @@ using TerminalFs.Internal.Sessions;
 
 namespace TerminalFs.Internal.Hooks;
 
+/// <summary>A tool call the plugin saw, which a permission check may be for.</summary>
+/// <param name="Tool">The tool's name.</param>
+/// <param name="Input">What it was called with.</param>
+internal sealed record OpencodeCall(string? Tool, JsonElement Input)
+{
+    /// <summary>A string field of the input, or null.</summary>
+    internal string? Field(string name) =>
+        Input.ValueKind == JsonValueKind.Object
+        && Input.TryGetProperty(name, out JsonElement value)
+        && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+}
+
 /// <summary>What the opencode plugin asks about one permission check.</summary>
 /// <param name="SessionId">The session.</param>
 /// <param name="Directory">The directory the session works in, which a relative path is resolved against.</param>
 /// <param name="Action">The permission opencode is checking: <c>edit</c>, <c>shell</c>, <c>external_directory</c>.</param>
 /// <param name="Resources">What it is checking it on.</param>
-/// <param name="Tool">The tool whose call this check is for, when the plugin saw it.</param>
-/// <param name="Input">What the tool was called with.</param>
+/// <param name="Calls">
+/// The tool calls under way that the check can be for. Usually one; several when a script run by
+/// <c>execute</c> makes calls at once, which all carry its id.
+/// </param>
 /// <param name="Rules">The session's permission rules, in the order its agent resolved them.</param>
 internal sealed record OpencodeCheck(
     string SessionId,
     string Directory,
     string Action,
     IReadOnlyList<string> Resources,
-    string? Tool,
-    JsonElement Input,
+    IReadOnlyList<OpencodeCall> Calls,
     IReadOnlyList<OpencodeRule> Rules)
 {
     /// <summary>Reads what the plugin wrote.</summary>
@@ -29,6 +44,15 @@ internal sealed record OpencodeCheck(
         using var document = JsonDocument.Parse(json);
         JsonElement root = document.RootElement;
 
+        IReadOnlyList<OpencodeCall> calls =
+            root.TryGetProperty("calls", out JsonElement listed) && listed.ValueKind == JsonValueKind.Array
+                ? [.. listed.EnumerateArray().Select(call => new OpencodeCall(
+                    Text(call, "tool"),
+                    call.TryGetProperty("input", out JsonElement input) ? input.Clone() : default))]
+                : Text(root, "tool") is not null || root.TryGetProperty("input", out _)
+                    ? [new OpencodeCall(Text(root, "tool"), root.TryGetProperty("input", out JsonElement single) ? single.Clone() : default)]
+                    : [];
+
         return new OpencodeCheck(
             Text(root, "session_id") ?? throw new JsonException("the check has no session_id"),
             Text(root, "directory") ?? Environment.CurrentDirectory,
@@ -36,17 +60,13 @@ internal sealed record OpencodeCheck(
             root.TryGetProperty("resources", out JsonElement resources) && resources.ValueKind == JsonValueKind.Array
                 ? [.. resources.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.String).Select(item => item.GetString()!)]
                 : [],
-            Text(root, "tool"),
-            root.TryGetProperty("input", out JsonElement input) ? input.Clone() : default,
+            calls,
             root.TryGetProperty("rules", out JsonElement rules) && rules.ValueKind == JsonValueKind.Array
                 ? [.. rules.EnumerateArray()
                     .Where(rule => Text(rule, "action") is not null && Text(rule, "resource") is not null && Text(rule, "effect") is not null)
                     .Select(rule => new OpencodeRule(Text(rule, "action")!, Text(rule, "resource")!, Text(rule, "effect")!))]
                 : []);
     }
-
-    /// <summary>A string field of the tool's input, or null.</summary>
-    internal string? Field(string name) => Text(Input, name);
 
     private static string? Text(JsonElement element, string name) =>
         element.ValueKind == JsonValueKind.Object
@@ -176,11 +196,29 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
 
         if (check.Action == "edit")
         {
+            // A write is whatever sets a file's whole content, by whatever name: a plugin can put
+            // the built-in write under another one, to call it from code mode.
+            OpencodeCall[] writes = [.. check.Calls.Where(call =>
+                call.Field("content") is not null && call.Tool is not ("edit" or "patch" or "apply_patch"))];
+
             foreach (string target in inTrees)
             {
-                TreeCall call = check.Tool == "write"
-                    ? TreeCalls.Write(target, check.Field("content") ?? string.Empty, paths, check.SessionId)
-                    : TreeCalls.Edit(target, paths);
+                OpencodeCall[] matching = [.. writes.Where(call => Resolved(call.Field("path") ?? call.Field("filePath"), check.Directory) == target)];
+
+                // The write this check is for: the one whose path lands where opencode resolved it
+                // to, or the only one there is. Several at once that cannot be told apart are not
+                // guessed between, because the guess would check one command and run another.
+                OpencodeCall? write = matching.Length == 1 ? matching[0]
+                    : matching.Length == 0 && writes.Length == 1 ? writes[0]
+                    : null;
+
+                TreeCall call = write is not null
+                    ? TreeCalls.Write(target, write.Field("content")!, paths, check.SessionId)
+                    : writes.Length > 1
+                        ? new TreeCall.Refused(
+                            "several writes were made at once and this one cannot be told from the others. Write a "
+                            + "session tree's files one at a time")
+                        : TreeCalls.Edit(target, paths);
 
                 if (call is not TreeCall.Elsewhere)
                 {
@@ -190,19 +228,40 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
 
             // A patch names its files in its text too; one naming a tree is refused whether or not
             // opencode's resources said so.
-            return check.Tool is "patch" or "apply_patch"
-                && (check.Field("patchText") ?? string.Empty).Contains(paths.Root, StringComparison.Ordinal)
+            return check.Calls.Any(call => call.Tool is "patch" or "apply_patch"
+                && (call.Field("patchText") ?? string.Empty).Contains(paths.Root, StringComparison.Ordinal))
                     ? new TreeCall.Refused("nothing in a session tree is patched. Write a command to ctl/<name> with the write tool")
                     : new TreeCall.Elsewhere();
         }
 
-        return (check.Action, check.Tool) switch
+        OpencodeCall[] shells = [.. check.Calls.Where(call => call.Field("command") is not null)];
+
+        if (check.Action != "shell" && !shells.Any(call => call.Tool is "shell" or "bash"))
         {
-            ("shell", _) or (_, "shell" or "bash") when check.Field("command") is { } command =>
-                TreeCalls.Bash(command, paths, check.SessionId, TreeCalls.Spellings(paths, environment, home)),
-            _ => new TreeCall.Elsewhere(),
+            return new TreeCall.Elsewhere();
+        }
+
+        TreeCall[] found = [.. shells.Select(call =>
+            TreeCalls.Bash(call.Field("command")!, paths, check.SessionId, TreeCalls.Spellings(paths, environment, home)))];
+
+        return found.Length switch
+        {
+            0 => new TreeCall.Elsewhere(),
+            1 => found[0],
+            _ => found.All(call => call is TreeCall.Elsewhere)
+                ? new TreeCall.Elsewhere()
+                : new TreeCall.Refused(
+                    "several shell commands were run at once and this one cannot be told from the others. Run "
+                    + "commands that reach a session tree one at a time"),
         };
     }
+
+    /// <summary>A tool's path as opencode resolves it: <c>~</c> is home, anything relative is the session's directory.</summary>
+    private string? Resolved(string? path, string directory) =>
+        string.IsNullOrWhiteSpace(path) ? null
+        : path == "~" ? home
+        : path.StartsWith("~/", StringComparison.Ordinal) ? Path.GetFullPath(Path.Combine(home, path[2..]))
+        : Path.GetFullPath(path, directory);
 
     private static bool Under(string path, string directory) =>
         path == directory || path.StartsWith(directory + "/", StringComparison.Ordinal);

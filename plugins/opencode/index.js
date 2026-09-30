@@ -5,8 +5,9 @@
 // the command inside. This plugin hooks that check, asks `terminalfs hook opencode check` what the
 // session's rules say about the command, and sets the check's effect to the answer: deny refuses
 // the write with the reason, ask shows opencode's own prompt — the write's diff, which is the
-// command — and allow lets it through. Once an allowed write lands, the command's state and output
-// are added to the write's result, so a command costs one tool call.
+// command — and allow lets it through. The built-in read and write are also made callable from
+// opencode's execute tool, so a script can write commands and read what they did in one turn; a
+// write made on its own gets the command's state and output added to its result instead.
 //
 // Everything that decides is in the terminalfs binary, shared with the Claude Code plugin; this
 // file only carries opencode's events to it. terminalfs has to be on the PATH.
@@ -40,8 +41,6 @@ function terminalfs(event, input) {
   })
 }
 
-/** The tools that can put something into a file, and so into a tree. */
-const writers = new Set(["write", "edit", "patch", "apply_patch", "shell", "bash"])
 
 /** The text a tool result carries, with `more` added to it. */
 function appended(content, more) {
@@ -55,8 +54,10 @@ export default {
     const directory = ctx.location.directory
     /** sessionID -> Promise<{ mount?, context, root? }> */
     const trees = new Map()
-    /** tool call id -> { tool, input } for every call that could write a file */
+    /** tool call id -> [{ tool, input }] for every call under way. Calls made from execute share its id. */
     const calls = new Map()
+    /** tool call id -> refusals given to calls under it, for an execute script to be told of. */
+    const refused = new Map()
     /** Where session trees live, once a session has started and said. */
     let root
     const mentionsTrees = (value) => JSON.stringify(value ?? "").includes(root ?? "/terminalfs")
@@ -94,6 +95,21 @@ export default {
       return [...(agent?.permissions ?? []), ...(session?.permissions ?? [])]
     }
 
+    // opencode's code mode leaves the built-in file tools out, and a command written and read back
+    // from one execute script is what makes it cost one turn. Each named built-in is copied under
+    // file_<name> for code mode alone: the copy shares the built-in's own execute, so its
+    // permission checks — this plugin's included — are the built-in's, and the built-in itself
+    // stays an ordinary tool. `codemode` in this plugin's options names others; [] turns it off.
+    const codemode = Array.isArray(ctx.options?.codemode) ? ctx.options.codemode : ["read", "write"]
+    await ctx.tool.transform((editor) => {
+      for (const id of codemode) {
+        const tool = editor.get(id)
+        if (!tool || editor.get(`file_${id}`)) continue
+        const { id: _, ...info } = tool
+        editor.add({ ...info, name: `file_${id}`, options: { ...info.options, codemode: true, pinned: true } })
+      }
+    })
+
     const skill = await readFile(skillPath, "utf8")
     await ctx.skill.transform((editor) => {
       editor.add({
@@ -116,18 +132,22 @@ export default {
       if (tree?.context) event.system.push({ type: "text", text: tree.context })
     })
 
-    // Every call that could write a file is kept until it is done, whatever its input says: a path
-    // can be spelled without naming the tree (~/.., a relative one), and the permission check that
-    // follows is judged on where opencode resolved it, with the content from here.
+    // Every call is kept until it is done, whatever its tool or its input: a path can be spelled
+    // without naming the tree (~/.., a relative one), a built-in can be put under another name, and
+    // the permission check that follows is judged on where opencode resolved the file to, with the
+    // content from here. A script run by execute makes its calls under execute's own id, so an id
+    // holds a list, and terminalfs picks the call a check is for.
     await ctx.tool.hook("execute.before", (event) => {
-      if (writers.has(event.tool)) calls.set(event.id, { tool: event.tool, input: event.input })
+      const pending = calls.get(event.id) ?? []
+      pending.push({ tool: event.tool, input: event.input })
+      calls.set(event.id, pending)
     })
 
     await ctx.permission.hook("evaluate", async (event) => {
-      const call = event.source?.id ? calls.get(event.source.id) : undefined
+      const pending = event.source?.id ? (calls.get(event.source.id) ?? []) : []
       // A shell command can reach a tree however it spells the path, so every one is checked;
       // anything else only when it names where trees live.
-      if (event.action !== "shell" && !mentionsTrees(event.resources) && !mentionsTrees(call?.input)) return
+      if (event.action !== "shell" && !mentionsTrees(event.resources) && !mentionsTrees(pending)) return
 
       try {
         const decision = await terminalfs("check", {
@@ -135,13 +155,16 @@ export default {
           directory,
           action: event.action,
           resources: event.resources,
-          tool: call?.tool,
-          input: call?.input,
+          calls: pending,
           rules: await rules(event.sessionID, event.agent),
         })
         if (decision.effect === "none") return
         event.effect = decision.effect
         if (decision.message) event.message = decision.message
+        // Kept for the script a refused call was made from, which is told when it ends.
+        if (decision.effect === "deny" && decision.message && pending.some((call) => call.tool === "execute")) {
+          refused.set(event.source.id, [...(refused.get(event.source.id) ?? []), decision.message])
+        }
       } catch (error) {
         // A check that fell over is not a way through.
         event.effect = "deny"
@@ -152,9 +175,21 @@ export default {
     // A command written to ctl/<name> ran; what it did is added to the write's result, so the
     // agent needs no second call to read it.
     await ctx.tool.hook("execute.after", async (event) => {
-      const call = calls.get(event.id)
-      calls.delete(event.id)
-      if (!call || event.status !== "completed" || event.tool !== "write") return
+      const pending = calls.get(event.id) ?? []
+      const at = pending.findIndex((call) => call.tool === event.tool && JSON.stringify(call.input) === JSON.stringify(event.input))
+      const call = pending[at]
+      if (at >= 0) pending.splice(at, 1)
+      if (pending.length === 0) calls.delete(event.id)
+
+      // A call refused inside an execute script reaches the script only as "Unable to write", so
+      // the reasons are added to the script's own result when it ends.
+      if (event.tool === "execute") {
+        const reasons = refused.get(event.id)
+        refused.delete(event.id)
+        if (reasons && event.status === "completed") event.result.content = appended(event.result.content, reasons.join("\n"))
+        return
+      }
+      if (!call || event.status !== "completed" || typeof call.input?.content !== "string") return
 
       const tree = await trees.get(event.sessionID)
       const path = String(call.input?.path ?? "")

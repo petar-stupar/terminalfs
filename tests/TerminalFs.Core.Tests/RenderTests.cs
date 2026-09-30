@@ -280,17 +280,18 @@ public sealed class RenderTests : IDisposable
     }
 
     /// <summary>
-    /// opencode's code mode cannot write files, so a command is one write, and the plugin fills its
-    /// result in. Without the plugin it takes the reads too, and those still go wait first.
+    /// A command, and the reads of what it did, in one execute script: the shape that makes a
+    /// command one turn. The single write, whose result the plugin fills in, is the fallback.
     /// </summary>
     [Fact]
-    public async Task TheOpenCodeSkillRunsACommandInOneWrite()
+    public async Task TheOpenCodeSkillWritesAndReadsInOneExecuteScript()
     {
         string text = await Skill(workspace, "opencode");
 
-        Assert.Contains("path:    <mount>/ctl/build", text, StringComparison.Ordinal);
-        Assert.Contains("the write's result also carries what the command did", text, StringComparison.Ordinal);
-        Assert.Contains("Without the plugin", text, StringComparison.Ordinal);
+        Assert.Contains("inside a single `execute` script", text, StringComparison.Ordinal);
+        Assert.Contains("await tools.file_write({ path: `${M}/ctl/${n}`", text, StringComparison.Ordinal);
+        Assert.Contains("const M = \"<mount>\"", text, StringComparison.Ordinal);
+        Assert.Contains("Without `execute`, write the command with the `write` tool", text, StringComparison.Ordinal);
     }
 
     /// <summary>

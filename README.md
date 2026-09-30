@@ -343,16 +343,21 @@ permission rules applied to what runs through it. Copy the directory to
 It needs `terminalfs` on the `PATH` and whatever sessions need.
 
 The tree is started before the session's first prompt and the agent told where it is, and it is
-stopped when the session is deleted or opencode's server stops. The agent gets the opencode skill:
-a command is written with the `write` tool to `<mount>/ctl/<name>`, and the write's result comes
-back with what the command did — its state, exit code and output — so a command is one call.
+stopped when the session is deleted or opencode's server stops. The agent gets the opencode skill,
+which writes a command and reads what it did in one `execute` script. opencode's code mode leaves
+its built-in file tools out, so the plugin copies `read` and `write` into it as `file_read` and
+`file_write`: the copies are the built-ins, permission checks and all, and the built-ins stay
+ordinary tools too. `{ "codemode": ["read", "write", "grep", "glob"] }` in the plugin's options
+copies more, and `[]` none. A command written with the plain `write` tool gets its state, exit
+code and output added to the write's result, so it is one call that way too.
 
 opencode checks that write as an edit of a file, and its `shell` rules never see the command in it.
 The plugin hooks that check and answers it from the session's own rules, read as opencode reads
 them — the last rule that matches wins, every command in the line has to be allowed — so a deny
 refuses the write naming the rule, an ask shows opencode's own prompt with the command as the diff,
-and an allow lets it through. `permission.bash` rules count as `shell` rules, as opencode migrates
-them. A shell tool writing into the tree in the Claude Code skill's shape is checked the same way,
+and an allow lets it through. The same holds for a write made from an `execute` script, where a
+refusal reaches the script only as `Unable to write`, and the rule that refused it is added to the
+script's result. `permission.bash` rules count as `shell` rules, as opencode migrates them. A shell tool writing into the tree in the Claude Code skill's shape is checked the same way,
 and the same things are refused: another session's tree, an edit or a patch in a tree, and a write
 the plugin cannot read a command out of.
 

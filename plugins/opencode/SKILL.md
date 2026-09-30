@@ -18,30 +18,34 @@ Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
 
 ## Run a command — in one tool call
 
-Write the command with the `write` tool, as the whole of `<mount>/ctl/<name>`, with the
-name your own — letters, digits, `_`, `-` and `.`, up to 64:
+Do the write and the reads inside a single `execute` script, with `tools.file_write` and
+`tools.file_read` — the terminalfs plugin puts opencode's own write and read there. Never
+split them across turns: every extra turn re-bills the whole conversation, so a command
+should cost one turn, not two or three, and several commands can share one script.
 
-```text
-write   path:    <mount>/ctl/build
-        content: dotnet build 2>&1 | tail -40
+```js
+const M = "<mount>", n = "build"; // name: letters, digits, _ - . max 64
+await tools.file_write({ path: `${M}/ctl/${n}`, content: "dotnet build 2>&1 | tail -40" });
+const state = (await tools.file_read({ path: `${M}/cmd/${n}/wait`     })).content;
+const out   = (await tools.file_read({ path: `${M}/cmd/${n}/stdout`   })).content;
+const code  = (await tools.file_read({ path: `${M}/cmd/${n}/exitcode` })).content;
+return { state, code, out };
 ```
 
-With the terminalfs plugin, the write's result also carries what the command did: whether
-it `completed` or ended in `error`, its exit code, and its output. That is the whole
-command, in one call. If it says the command is still `running`, read
-`<mount>/cmd/<name>/wait` again, then `<mount>/cmd/<name>/stdout`.
+Read `wait` **before** `stdout`. `wait` blocks until the command stops and returns
+`completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that
+grows, so reading it first silently returns partial output. Add `stderr` only when you
+need it.
 
-Without the plugin the result only says the file was written. Read
-`<mount>/cmd/<name>/wait` **before** `<mount>/cmd/<name>/stdout`: `wait` blocks until the
-command stops and says how it ended, or `running` after about 25 seconds, and `stdout` is a
-file that grows, so reading it first silently returns partial output. Where an `execute`
-tool can call file tools, do the write and both reads in one script rather than three
-calls.
+Without `execute`, write the command with the `write` tool on its own: with the plugin, its
+result also carries what the command did — how it ended, its exit code and its output — so
+it is still one call. Without the plugin, follow it with reads of `wait`, then `stdout`.
 
 The plugin checks each command against your `shell` permission rules, as if you had run
-it with a shell tool, before the write lands. A refusal names the rule; don't reword the
-command to get round it. opencode may ask the user first. Write the path out in full, as
-above.
+it with a shell tool, before the write lands, and opencode may ask the user first. A
+refused write names the rule; inside a script it throws only `Unable to write`, and the
+rule is given after the script's result. Don't reword the command to get round it. Write
+the path out in full, as above.
 
 ## One name, one command
 
