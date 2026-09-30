@@ -314,7 +314,9 @@ internal sealed record CliOptions
           --init-settings [file]      write a settings file with sane defaults, and stop.
                                       It refuses to overwrite one that is already there
           --keep <n>                  seconds a finished command is kept after the last
-                                      read of it, 60 by default; 0 removes it at once
+                                      read of it, 60 by default; 0 removes it at once. A
+                                      name nobody has written to is held at least 10
+                                      seconds either way
           --wait-timeout <n>          seconds a read of wait blocks before answering
                                       'running', 25 by default
           --settle <ms>               milliseconds a name that has been written to waits

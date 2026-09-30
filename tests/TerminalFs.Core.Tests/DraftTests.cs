@@ -148,6 +148,28 @@ public sealed class DraftTests : IDisposable
         Assert.NotNull(Registry.FindDraft("t1"));
     }
 
+    /// <summary>
+    /// A keep of zero is for finished commands. A name made and closed empty, which is how a
+    /// write tool that creates its file first begins, is still there for the write that follows.
+    /// </summary>
+    [Fact]
+    public void AKeepOfZeroStillHoldsANameForTheWriteThatFollows()
+    {
+        using var zero = new Workspace(new CommandOptions { KeepAfterExit = TimeSpan.Zero, TimeProvider = time }, settle: Settle);
+
+        zero.Take("t1").Close();
+        time.Advance(TimeSpan.FromSeconds(1));
+
+        using ControlSession again = zero.Registry.OpenControl(zero.Registry.FindDraft("t1")!, claiming: false);
+
+        Assert.NotNull(zero.Registry.FindDraft("t1"));
+
+        again.Close();
+        time.Advance(CommandRegistry.MinimumDraftKeep);
+
+        Assert.Null(zero.Registry.FindDraft("t1"));
+    }
+
     [Fact]
     public void AFreedNameCanBeTakenAgain()
     {

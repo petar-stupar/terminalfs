@@ -16,6 +16,14 @@ namespace TerminalFs.Core;
 public sealed class CommandRegistry : IDisposable
 {
     /// <summary>
+    /// The least a name nobody has written to yet is held for. A client that makes a file before
+    /// it writes to it closes the empty file first, and a keep of zero would free the name in
+    /// between, so the write that follows found it gone. Drafts are held for the keep time, or
+    /// this long when that is shorter.
+    /// </summary>
+    internal static readonly TimeSpan MinimumDraftKeep = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// How many just-removed ids are remembered. A caller's <c>rm -r</c> is several requests, and
     /// the timer can retire a command between any two of them; without this the rest of their
     /// removal fails on files that were there a moment ago. Sixty-four is far more than a client
@@ -259,6 +267,9 @@ public sealed class CommandRegistry : IDisposable
         Touch();
     }
 
+    private TimeSpan DraftKeep =>
+        options.KeepAfterExit > MinimumDraftKeep ? options.KeepAfterExit : MinimumDraftKeep;
+
     /// <summary>The sentence a refused command is given.</summary>
     public string Refusal(DenyRule rule)
     {
@@ -358,7 +369,7 @@ public sealed class CommandRegistry : IDisposable
             var draft = new Draft(
                 name,
                 nextOrdinal++,
-                options.KeepAfterExit,
+                DraftKeep,
                 options.Settle,
                 options.TimeProvider,
                 Discard,
