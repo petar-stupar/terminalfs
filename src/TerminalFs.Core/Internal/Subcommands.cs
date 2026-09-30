@@ -35,7 +35,7 @@ internal sealed record Subcommand(IReadOnlyList<string> Forms, string? Plain);
 /// as Claude Code takes them off, so a rule written for <c>npm test</c> sees <c>npm test</c>.
 /// </para>
 /// </remarks>
-internal static class Subcommands
+internal static partial class Subcommands
 {
     private static readonly string[] Wrappers =
         ["timeout", "time", "nice", "nohup", "stdbuf", "command", "builtin", "noglob", "xargs"];
@@ -100,6 +100,16 @@ internal static class Subcommands
             // 2>&1, <&3 and &> are redirections, not a command sent to the background.
             bool redirection = character == '&'
                 && ((at > 0 && command[at - 1] is '>' or '<') || (at + 1 < command.Length && command[at + 1] == '>'));
+
+            // A subshell, a group and a process substitution each hold commands of their own. Where
+            // a parenthesis or brace is only text, splitting at it leaves an allow one more piece
+            // to cover, which is a question rather than a command nobody approved.
+            if (character is '(' or ')' or '{' or '}')
+            {
+                Flush();
+
+                continue;
+            }
 
             if (character is '&' or '|' or ';' or '\n' or '\r' && !redirection)
             {
@@ -166,7 +176,7 @@ internal static class Subcommands
                 yield return command[(at + 1)..close];
                 at = close;
             }
-            else if (command[at] == '$' && at + 1 < command.Length && command[at + 1] == '(')
+            else if (command[at] is '$' or '<' or '>' && at + 1 < command.Length && command[at + 1] == '(')
             {
                 int depth = 0;
                 int end = at + 1;
@@ -203,6 +213,19 @@ internal static class Subcommands
         string[] words = piece.Split(' ');
         int at = 0;
 
+        // What starts a body — if true; then sudo ls — is not the command in it.
+        while (at < words.Length - 1 && Keywords.Contains(words[at], StringComparer.Ordinal))
+        {
+            at++;
+        }
+
+        if (at > 0)
+        {
+            piece = string.Join(' ', words[at..]);
+            words = words[at..];
+            at = 0;
+        }
+
         while (at < words.Length && IsAssignment(words[at]))
         {
             at++;
@@ -223,7 +246,9 @@ internal static class Subcommands
             forms.Add(string.Join(' ', words[command..]));
         }
 
-        string? plain = assigned
+        // An allow rule approves a command, not the file it writes or reads: Claude Code checks a
+        // redirection's target, and tee's, against its file rules, which are not here to consult.
+        string? plain = assigned || Redirects(piece)
             ? null
             : command < words.Length ? string.Join(' ', words[command..]) : piece;
 
@@ -268,6 +293,21 @@ internal static class Subcommands
 
         return at;
     }
+
+    private static bool Redirects(string piece)
+    {
+        string bare = Descriptors().Replace(piece, string.Empty);
+
+        return bare.Contains('>', StringComparison.Ordinal)
+            || bare.Contains('<', StringComparison.Ordinal)
+            || bare.Split(' ').Contains("tee", StringComparer.Ordinal);
+    }
+
+    /// <summary>Redirections that touch no file: 2&gt;&amp;1, &lt;&amp;3, and to or from /dev/null.</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"\d*[<>]&\d+|\d*>>?\s*/dev/null|<\s*/dev/null")]
+    private static partial System.Text.RegularExpressions.Regex Descriptors();
+
+    private static readonly string[] Keywords = ["if", "then", "else", "elif", "do", "while", "until", "!", "time"];
 
     private static bool IsAssignment(string word)
     {

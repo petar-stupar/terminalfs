@@ -66,16 +66,4 @@ public sealed class PluginHooksTests
 
         Assert.Superset(new HashSet<string>(["Bash", "Write", "Edit"], StringComparer.Ordinal), new HashSet<string>(tools, StringComparer.Ordinal));
     }
-
-    /// <summary>
-    /// Claude Code gives the hooks at the end of a session a second and a half between them unless
-    /// one asks for longer, and stopping a server that is still running commands takes more.
-    /// </summary>
-    [Fact]
-    public void StoppingASessionIsGivenTimeToFinish()
-    {
-        (_, _, JsonElement hook) = Each().Single(hook => hook.Event == "SessionEnd");
-
-        Assert.True(hook.GetProperty("timeout").GetInt32() >= 20);
-    }
 }

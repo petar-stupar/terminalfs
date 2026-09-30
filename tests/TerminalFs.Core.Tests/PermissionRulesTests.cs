@@ -74,6 +74,40 @@ public sealed class PermissionRulesTests
         Assert.Equal(RuleKind.Deny, Rules(deny: ["Bash(sudo *)"]).Decide(command)?.Kind);
 
     /// <summary>
+    /// Claude Code finds a denied command inside a subshell, a group, a loop's body and a process
+    /// substitution, in every mode. One missed here would run unasked where no rule applies.
+    /// </summary>
+    [Theory]
+    [InlineData("(sudo ls)")]
+    [InlineData("{ sudo ls; }")]
+    [InlineData("if true; then sudo ls; fi")]
+    [InlineData("for i in 1 2; do sudo ls; done")]
+    [InlineData("while true; do sudo ls; done")]
+    [InlineData("ls <(sudo cat /etc/shadow)")]
+    public void ADenyReachesACommandNestedInsideAnother(string command) =>
+        Assert.Equal(RuleKind.Deny, Rules(allow: ["Bash(ls *)"], deny: ["Bash(sudo *)"]).Decide(command)?.Kind);
+
+    /// <summary>
+    /// A rule approves a command, not what it writes: Claude Code checks a redirection's target,
+    /// and tee's, against rules that are not Bash rules, so an allow here does not cover them.
+    /// </summary>
+    [Theory]
+    [InlineData("ls > ~/.bashrc")]
+    [InlineData("ls >> /etc/hosts")]
+    [InlineData("ls < /etc/shadow")]
+    [InlineData("ls | tee ~/.profile")]
+    [InlineData("ls <(cat /etc/shadow)")]
+    public void AnAllowDoesNotCoverWhereACommandWrites(string command) =>
+        Assert.Null(Rules(allow: ["Bash(ls *)", "Bash(tee *)", "Bash(cat *)"]).Decide(command));
+
+    [Theory]
+    [InlineData("ls 2>&1")]
+    [InlineData("ls 2>/dev/null")]
+    [InlineData("ls > /dev/null 2>&1")]
+    public void ARedirectionThatTouchesNoFileIsNoObstacle(string command) =>
+        Assert.Equal(RuleKind.Allow, Rules(allow: ["Bash(ls *)"]).Decide(command)?.Kind);
+
+    /// <summary>
     /// An allow rule approves a command only when it covers all of it; the rest is somebody else's
     /// decision.
     /// </summary>

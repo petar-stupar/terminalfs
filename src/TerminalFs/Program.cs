@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using NineP.Protocol;
 using NineP.Protocol.Transports;
 using NineP.Server;
@@ -279,15 +280,35 @@ internal static class Program
                     Console.WriteLine(decision.Json());
                 }
             }
-            catch (Exception exception) when (json.Contains(paths.Root, StringComparison.Ordinal) || json.Contains("/terminalfs", StringComparison.Ordinal))
+#pragma warning disable CA1031 // Whatever it was, the call gets an answer rather than an exit code.
+            catch (Exception exception)
+#pragma warning restore CA1031
             {
-                Console.WriteLine(new ClaudeDecision("deny", $"terminalfs could not check this call: {exception.Message}").Json());
+                // Nothing that could not be read is let through on the strength of a crash, and
+                // nothing that never went near a tree is refused because of one.
+                if (json.Contains(paths.Root, StringComparison.Ordinal) || json.Contains("/terminalfs", StringComparison.Ordinal))
+                {
+                    Console.WriteLine(new ClaudeDecision("deny", $"terminalfs could not check this call: {exception.Message}").Json());
+                }
+                else
+                {
+                    await Console.Error.WriteLineAsync("terminalfs: " + exception.Message).ConfigureAwait(false);
+                }
             }
 
             return 0;
         }
 
-        ClaudeHookInput input = ClaudeHookInput.Parse(json);
+        ClaudeHookInput input;
+
+        try
+        {
+            input = ClaudeHookInput.Parse(json);
+        }
+        catch (JsonException exception)
+        {
+            throw new MountException($"the {args[1]} hook's input is not what Claude Code sends: {exception.Message}");
+        }
 
         if (!SessionPaths.IsValidId(input.SessionId))
         {
@@ -298,14 +319,18 @@ internal static class Program
         // busy, or fail to start a program because the session's directory went away.
         Environment.CurrentDirectory = Path.GetPathRoot(AppContext.BaseDirectory) ?? "/";
 
-        var sessions = new Sessions(paths, new SessionHost(), Console.Error.WriteLine);
-
         if (args[1] == "session-end")
         {
-            await sessions.StopAsync(input.SessionId, CancellationToken.None).ConfigureAwait(false);
+            // Sessions only ever start on Linux, so elsewhere there is nothing to stop.
+            if (OperatingSystem.IsLinux())
+            {
+                SessionHost.StopDetached(input.SessionId);
+            }
 
             return 0;
         }
+
+        var sessions = new Sessions(paths, new SessionHost(), Console.Error.WriteLine);
 
         string context;
 

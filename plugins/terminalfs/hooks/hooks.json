@@ -7,7 +7,11 @@
           {
             "type": "command",
             "command": "terminalfs",
-            "args": ["hook", "claude", "session-start"],
+            "args": [
+              "hook",
+              "claude",
+              "session-start"
+            ],
             "timeout": 60,
             "statusMessage": "Mounting this session's terminalfs tree"
           }
@@ -20,8 +24,11 @@
           {
             "type": "command",
             "command": "terminalfs",
-            "args": ["hook", "claude", "session-end"],
-            "timeout": 30
+            "args": [
+              "hook",
+              "claude",
+              "session-end"
+            ]
           }
         ]
       }
@@ -33,7 +40,11 @@
           {
             "type": "command",
             "command": "terminalfs",
-            "args": ["hook", "claude", "pre-tool-use"],
+            "args": [
+              "hook",
+              "claude",
+              "pre-tool-use"
+            ],
             "timeout": 30
           }
         ]

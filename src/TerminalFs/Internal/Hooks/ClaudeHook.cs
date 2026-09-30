@@ -121,8 +121,8 @@ internal sealed class ClaudeHook(SessionPaths paths, Func<string, string?> envir
             "Bash" => TreeCalls.Bash(input.Tool("command") ?? string.Empty, paths, input.SessionId, Spellings()),
             "Write" when input.Tool("file_path") is { } path =>
                 TreeCalls.Write(path, input.Tool("content") ?? string.Empty, paths, input.SessionId),
-            _ when input.Tool("file_path") is { } path => TreeCalls.Edit(path, paths),
-            _ when input.Tool("notebook_path") is { } path => TreeCalls.Edit(path, paths),
+            "Edit" or "MultiEdit" when input.Tool("file_path") is { } path => TreeCalls.Edit(path, paths),
+            "NotebookEdit" when input.Tool("notebook_path") is { } path => TreeCalls.Edit(path, paths),
             _ => new TreeCall.Elsewhere(),
         };
 

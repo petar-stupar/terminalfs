@@ -58,6 +58,10 @@ internal static partial class TreeCalls
     private static readonly System.Buffers.SearchValues<char> PathEnds =
         System.Buffers.SearchValues.Create(" \t\n\r;|&<>()`\"'");
 
+    private static readonly System.Buffers.SearchValues<char> Expanded = System.Buffers.SearchValues.Create("$~`*?[");
+
+    private static readonly System.Buffers.SearchValues<char> NotInARead = System.Buffers.SearchValues.Create("><`$&(){}\r\n");
+
     private static readonly string[] ReadingPrograms = ["cat", "ls", "tail", "head", "wc", "grep", "stat"];
 
     /// <summary>What a <c>Bash</c> call does.</summary>
@@ -67,20 +71,30 @@ internal static partial class TreeCalls
     /// <param name="spellings">Other ways of writing <see cref="SessionPaths.Root"/>: through a variable, or <c>~</c>.</param>
     internal static TreeCall Bash(string command, SessionPaths paths, string id, IReadOnlyList<string> spellings)
     {
-        if (spellings.FirstOrDefault(spelling => command.Contains(spelling, StringComparison.Ordinal)) is { } other)
+        // Quotes taken out first, so "$XDG_RUNTIME_DIR"/terminalfs is the spelling it stands for.
+        string unquoted = command.Replace("\"", string.Empty, StringComparison.Ordinal).Replace("'", string.Empty, StringComparison.Ordinal);
+        string[] lines = command.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+        if (spellings.FirstOrDefault(spelling => unquoted.Contains(spelling, StringComparison.Ordinal)) is { } other)
         {
             return new TreeCall.Refused(
                 $"it names the session trees as '{other}'. Write the path out as {paths.Root}, so the command "
                 + "written to the tree can be checked against your permission rules");
         }
 
-        if (!command.Contains(paths.Root, StringComparison.Ordinal))
+        if (!Paths(command, paths.Root).Any())
         {
-            return new TreeCall.Elsewhere();
+            // The skill's shape is only ever used for a tree, so one aimed at a path this cannot
+            // see — relative, or built at run time — is a tree reached some other way.
+            return Shape().Match(lines[0].Trim()) is { Success: true } elsewhere
+                && Opaque(Unquoted(elsewhere.Groups["path"].Value))
+                    ? new TreeCall.Refused(
+                        $"it writes a command to {elsewhere.Groups["path"].Value}, which is not a path this check can "
+                        + $"read. Write the full path, as the terminalfs skill does: cat > {paths.MountPath(id)}/ctl/<name> <<'CMD'")
+                    : new TreeCall.Elsewhere();
         }
 
         string own = paths.MountPath(id);
-        string[] lines = command.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
 
         if (Shape().Match(lines[0].Trim()) is { Success: true } opening
             && Under(Normalised(Unquoted(opening.Groups["path"].Value)), paths.Root))
@@ -104,6 +118,11 @@ internal static partial class TreeCalls
     /// <summary>What a <c>Write</c> call does.</summary>
     internal static TreeCall Write(string filePath, string content, SessionPaths paths, string id)
     {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return new TreeCall.Elsewhere();
+        }
+
         string full = Path.GetFullPath(filePath);
 
         if (!Under(full, paths.Root))
@@ -131,7 +150,7 @@ internal static partial class TreeCalls
 
     /// <summary>What an <c>Edit</c>, or any other tool that changes a file in place, does.</summary>
     internal static TreeCall Edit(string filePath, SessionPaths paths) =>
-        Under(Path.GetFullPath(filePath), paths.Root)
+        !string.IsNullOrWhiteSpace(filePath) && Under(Path.GetFullPath(filePath), paths.Root)
             ? new TreeCall.Refused(
                 "nothing in a session tree is edited in place. Run a command with the Bash shape the "
                 + "terminalfs skill gives")
@@ -246,10 +265,13 @@ internal static partial class TreeCalls
         && path.EndsWith("/kill", StringComparison.Ordinal)
         && CommandId.IsValid(path[(own.Length + "/cmd/".Length)..^"/kill".Length]);
 
-    /// <summary>Reads that change nothing: a reading program, with no redirection and no substitution.</summary>
+    /// <summary>
+    /// Reads that change nothing: a reading program, with no redirection, no substitution, and
+    /// nothing that could start a command of its own inside it.
+    /// </summary>
     private static bool IsRead(string segment) =>
-        segment.IndexOfAny(['>', '<', '`', '$']) < 0
-        && ReadingPrograms.Contains(segment.Split(' ')[0], StringComparer.Ordinal);
+        segment.AsSpan().IndexOfAny(NotInARead) < 0
+        && ReadingPrograms.Contains(segment.Split(' ', '\t')[0], StringComparer.Ordinal);
 
     /// <summary><c>echo x &gt; &lt;tree&gt;/cmd/&lt;name&gt;/kill</c>, which ends a command.</summary>
     private static bool IsKill(string segment, string own) =>
@@ -265,9 +287,22 @@ internal static partial class TreeCalls
         {
             int end = command.AsSpan(at).IndexOfAny(PathEnds);
 
-            yield return Normalised(end < 0 ? command[at..] : command.Substring(at, end));
+            string path = Normalised(end < 0 ? command[at..] : command.Substring(at, end));
+
+            // A sibling that only starts with the same letters — terminalfs-old — is not a tree.
+            if (Under(path, root))
+            {
+                yield return path;
+            }
         }
     }
+
+    /// <summary>
+    /// A path whose target cannot be known from the text: relative, or with anything in it a shell
+    /// would expand.
+    /// </summary>
+    private static bool Opaque(string path) =>
+        !path.StartsWith('/') || path.AsSpan().IndexOfAny(Expanded) >= 0;
 
     private static string Normalised(string path) => path.Length > 1 ? path.TrimEnd('/') : path;
 
@@ -293,6 +328,6 @@ internal static partial class TreeCalls
     [GeneratedRegex("""^echo\s+\S+\s*>\s*(?<path>"[^"]*"|'[^']*'|\S+)$""")]
     private static partial Regex Kill();
 
-    [GeneratedRegex(@"&&|\|\||;|\||\n")]
+    [GeneratedRegex(@"&&|\|\||\|&|;|\||&|\n")]
     private static partial Regex Separators();
 }

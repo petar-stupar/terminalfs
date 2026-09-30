@@ -543,7 +543,8 @@ internal static class TreeText
         against your permission rules as if you had run it with Bash, and refuses a write into
         the tree in any other shape, or anything but reads after it in the same call. The command
         can be several lines, but none of them can be just `CMD`. Write the path out in full each
-        time, not through a variable or after a `cd`: a path the check cannot see is one it refuses.
+        time, not through a variable or after a `cd`: the check cannot read a command written
+        to a path it cannot see, and refuses the ones it notices.
 
         A refusal says why. `denied by` names the rule and the settings file it is in; don't
         reword the command to get round it.

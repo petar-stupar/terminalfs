@@ -287,9 +287,11 @@ claude plugin marketplace add petar-stupar/terminalfs
 claude plugin install terminalfs@terminalfs
 ```
 
-It needs `terminalfs` on the `PATH` and whatever sessions need. When a session starts, its tree is
-mounted and the agent is told where; when the session ends, the tree is stopped. The agent gets the
-Claude Code skill, which writes a command and reads what it did in one Bash call:
+It needs `terminalfs` on the `PATH` and whatever sessions need. Without the binary the hooks fail,
+and Claude Code reports that and carries on with no tree and no check. When a session starts, its
+tree is mounted and the agent is told where; when it ends, a stop is started that runs on after
+Claude Code has gone, since the hooks at the end of a session get a second and a half. The agent gets
+the Claude Code skill, which writes a command and reads what it did in one Bash call:
 
 ```sh
 cat > <mount>/ctl/build <<'CMD'
@@ -316,13 +318,20 @@ follows the session's permission mode:
 
 The hook also refuses whatever it cannot read a command out of: a write into `ctl/` in any other
 shape, anything but reads after the command in the same call, an edit anywhere in a tree, a command
-that itself writes into a tree, another session's tree, and the trees' directory spelled through a
-variable. Reading a session's own tree, and ending one of its commands, is allowed.
+that itself writes into a tree, another session's tree, the skill's shape aimed at a path it cannot
+read, and the trees' directory spelled through the variables it came from. Reading a session's own
+tree, and ending one of its commands, is allowed.
+
+The rules it reads are the ones in files. Rules given another way — `--allowedTools`,
+`--disallowedTools` and `--settings` on the command line, a skill's `allowed-tools`, a "yes, for this
+session" at a prompt, and managed policy delivered by MDM, the registry or the claude.ai console
+rather than as a file — are Claude Code's alone, and a command they would allow is asked about, or
+in `dontAsk` refused.
 
 **This is a check, not a boundary.** The agent runs as you, the same as the server: it can find
-another session's port in the runtime directory and speak 9P to it, and a path built at run time or
-reached through a link is one the hook never sees. It keeps an agent that follows its instructions
-inside the rules you wrote for it.
+another session's port in the runtime directory and speak 9P to it, and a path built at run time,
+reached through a link, or spelled a way the hook does not recognise is one it never sees. It keeps
+an agent that follows its instructions inside the rules you wrote for it.
 
 ### What it cannot do
 
