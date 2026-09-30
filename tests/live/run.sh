@@ -61,11 +61,12 @@ run_prompt="Use the terminalfs skill for every shell command in this task, not a
 ask_prompt="Use the terminalfs skill. Run 'sh build.sh' through your session's terminalfs tree. Then, in a separate call, list your tree's cmd directory with ls. Report what happened, including refusals and why. Do not retry a refused step more than once."
 
 failed=0
+skipped=0
 
 for harness in "${harnesses[@]}"; do
     case "$harness" in
     claude)
-        command -v claude >/dev/null || { echo "claude: not installed, skipped"; continue; }
+        command -v claude >/dev/null || { echo "claude: not installed, skipped"; skipped=1; continue; }
         PATH="$scratch/bin:$PATH" terminalfs plugin install claude --dir "$scratch/claude-plugin" >/dev/null
         for scenario in run ask; do
             dir=$(project "claude-$scenario")
@@ -80,7 +81,9 @@ for harness in "${harnesses[@]}"; do
         ;;
     opencode)
         if [ -z "${TFS_LIVE_OPENCODE:-}" ] || [ -z "${TFS_LIVE_OPENCODE_HOME:-}" ]; then
-            echo "opencode: TFS_LIVE_OPENCODE and TFS_LIVE_OPENCODE_HOME not set, skipped"
+            echo "opencode: skipped; set TFS_LIVE_OPENCODE (an opencode v2 binary) and TFS_LIVE_OPENCODE_HOME"
+            echo "          (a home it is logged in under). CONTRIBUTING.md says how to log in once."
+            skipped=1
             continue
         fi
         oc="$TFS_LIVE_OPENCODE_HOME"
@@ -98,5 +101,13 @@ for harness in "${harnesses[@]}"; do
     *) echo "unknown harness '$harness'"; failed=1 ;;
     esac
 done
+
+if [ $failed -ne 0 ]; then
+    echo "FAILED: see the refusals above; TFS_LIVE_KEEP=1 keeps the transcripts"
+elif [ $skipped -ne 0 ]; then
+    echo "passed, with a harness skipped"
+else
+    echo "passed"
+fi
 
 exit $failed

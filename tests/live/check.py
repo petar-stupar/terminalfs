@@ -12,6 +12,10 @@ import json
 import re
 import sys
 
+if len(sys.argv) != 4 or sys.argv[1] not in ("claude", "opencode"):
+    sys.exit("usage: check.py claude|opencode run|ask <transcript.jsonl>\n"
+             "run.sh calls this for each run; run it yourself on a transcript kept with TFS_LIVE_KEEP=1")
+
 harness, scenario, path = sys.argv[1], sys.argv[2], sys.argv[3]
 SHAPE = re.compile(r"^cat\s*>\s*\S+/ctl/[A-Za-z0-9_.-]+\s*<<\s*'CMD'\s*$")
 
