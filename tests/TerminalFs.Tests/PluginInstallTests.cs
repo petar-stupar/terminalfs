@@ -91,18 +91,39 @@ public sealed class PluginInstallTests : IDisposable
         Assert.NotEqual("old", File.ReadAllText(Path.Combine(_directory, "index.js")));
     }
 
+    /// <summary>
+    /// Paths are built for the platform the test runs on: <c>/data</c> is not fully qualified on
+    /// Windows, where it would be ignored as a relative XDG directory is.
+    /// </summary>
     [Theory]
-    [InlineData(true, null, null, "/home/u/.local/share/terminalfs/claude-code")]
-    [InlineData(true, "XDG_DATA_HOME", "/data", "/data/terminalfs/claude-code")]
-    [InlineData(false, null, null, "/home/u/.config/opencode/plugins/terminalfs")]
-    [InlineData(false, "XDG_CONFIG_HOME", "/config", "/config/opencode/plugins/terminalfs")]
-    [InlineData(false, "XDG_CONFIG_HOME", "relative", "/home/u/.config/opencode/plugins/terminalfs")]
+    [InlineData(true, null, null, "home/u/.local/share/terminalfs/claude-code")]
+    [InlineData(true, "XDG_DATA_HOME", "data", "data/terminalfs/claude-code")]
+    [InlineData(false, null, null, "home/u/.config/opencode/plugins/terminalfs")]
+    [InlineData(false, "XDG_CONFIG_HOME", "config", "config/opencode/plugins/terminalfs")]
     public void ThePluginGoesWhereItsHarnessLooks(bool claude, string? variable, string? value, string expected)
     {
         Assert.Equal(
-            expected,
-            Plugins.DefaultDirectory(claude ? PluginHarness.Claude : PluginHarness.Opencode, name => name == variable ? value : null, "/home/u"));
+            Rooted(expected),
+            Plugins.DefaultDirectory(
+                claude ? PluginHarness.Claude : PluginHarness.Opencode,
+                name => name == variable && value is not null ? Rooted(value) : null,
+                Rooted("home/u")));
     }
+
+    /// <summary>A relative XDG directory is ignored, as the specification says.</summary>
+    [Fact]
+    public void ARelativeXdgDirectoryIsIgnored()
+    {
+        Assert.Equal(
+            Rooted("home/u/.config/opencode/plugins/terminalfs"),
+            Plugins.DefaultDirectory(
+                PluginHarness.Opencode,
+                name => name == "XDG_CONFIG_HOME" ? "relative" : null,
+                Rooted("home/u")));
+    }
+
+    private static string Rooted(string path) =>
+        Path.Combine([Path.GetPathRoot(Path.GetTempPath())!, .. path.Split('/')]);
 
     /// <summary>The opencode plugin asks the binary for its skill, as JSON.</summary>
     [Fact]
