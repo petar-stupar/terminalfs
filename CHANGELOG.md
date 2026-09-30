@@ -29,9 +29,10 @@ refuses a tag whose version has no section here.
   one Bash call of a fixed shape — `cat > <mount>/ctl/<name> <<'CMD'`, the command, `CMD`, then `cat`
   of `wait` and `stdout` — which a permission check can read the command out of. Both say to read
   `wait` before `stdout`, and not to spend a call removing command directories. Point opencode's
-  `skills.paths` at `<mountpoint>/skills/opencode`; copy the Claude Code one into
-  `$CLAUDE_CONFIG_DIR/skills/terminalfs/`. When the mountpoint is not known, each says where to find
-  it, and the Claude Code one gives way to a mount the session context names.
+  `skills.paths` at `skills/opencode` under the mountpoint; copy the Claude Code one into
+  `$CLAUDE_CONFIG_DIR/skills/terminalfs/`, replacing `<mount>` if it is still there. When the
+  mountpoint is not known, each says where to find it, and the Claude Code one gives way to a mount
+  the session context names.
 
 ### Removed
 

@@ -363,10 +363,11 @@ internal static class TreeText
     /// the tree and a reader already standing in it needs no prefix. Do not make them match.
     /// </para>
     /// <para>
-    /// The substitution is <c>&lt;mount&gt;</c> and nothing else. <c>&lt;name&gt;</c> and
-    /// <c>&lt;id&gt;</c> in this text are placeholders a reader is meant to fill in themselves,
-    /// and a general template pass would eat them. Only the sentence that says where the tree is
-    /// changes when nobody said.
+    /// Two things are substituted, and nothing else. <c>&lt;where&gt;</c> is the paragraph that
+    /// says where the tree is, which depends on the harness and on whether anybody said; it goes
+    /// in first, because it may itself say <c>&lt;mount&gt;</c>. Then <c>&lt;mount&gt;</c>, when
+    /// the path is known. <c>&lt;name&gt;</c> and <c>&lt;id&gt;</c> in this text are placeholders
+    /// a reader is meant to fill in themselves, and a general template pass would eat them.
     /// </para>
     /// </remarks>
     internal static string Skill(SkillHarness harness, string? mountPath)
@@ -399,7 +400,11 @@ internal static class TreeText
         return mountPath is null ? text : text.Replace("<mount>", At(mountPath), StringComparison.Ordinal);
     }
 
-    private const string SkillFrontmatter =
+    /// <summary>
+    /// opencode's skill: the write and the reads in one <c>execute</c> script, because every turn
+    /// re-bills the whole conversation and the script makes a command one turn instead of three.
+    /// </summary>
+    private const string OpenCodeSkillText =
         """
         ---
         name: terminalfs
@@ -407,94 +412,86 @@ internal static class TreeText
           Run shell commands by writing to a mounted filesystem instead of a command tool. Use
           when you need a command to keep running while you do something else, when its output is
           too large to read in one piece, or when you want to watch it as it goes. Covers running
-          a command, reading its output as it grows, waiting for it, killing it and clearing up.
+          a command, reading its output as it grows, waiting for it and killing it.
         ---
 
         # Running commands through terminalfs
 
+        <where>
+
+        Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
+        `<mount>/cmd/<name>/` as ordinary files.
+
+        ## Run a command — in one tool call
+
+        Do the write and the reads inside a single `execute` script. Never split them across
+        turns: every extra turn re-bills the whole conversation, so a command should cost one
+        turn, not two or three.
+
+        ```js
+        const M = "<mount>", n = "build"; // name: letters, digits, _ - . max 64
+        await tools.file_write({ path: `${M}/ctl/${n}`, content: "dotnet build 2>&1 | tail -40" });
+        const state = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/wait`     })).content;
+        const out   = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/stdout`   })).content;
+        const code  = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/exitcode` })).content;
+        return { state, code, out };
+        ```
+
+        Read `wait` **before** `stdout`. `wait` blocks until the command stops and returns
+        `completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that
+        grows, so reading it first silently returns partial output. Add `stderr` only when you
+        need it.
+
+        Without a code-mode tool the same command costs three calls — write `ctl/<name>`, read
+        `wait`, read `stdout`. Still do not skip `wait`.
+
+        ## One name, one command
+
+        A name runs once. Sequence **inside** the command, not across names: `a && b | c` is one
+        command. Use a fresh name for the next one. Nothing runs until the ctl file is closed, so
+        write it in a single operation. `<mount>/cmd/<name>` does not exist until there is
+        something to report.
+
+        ## Keep the command short and the output small
+
+        What you generate is the most expensive thing you do, and re-reading output is the second.
+
+        - Prefer one `sed -i -e … -e …` or one `awk` over an inline `python3 <<EOF` heredoc: an
+          inline script is billed as generated text every time you send it. If you genuinely need
+          a script, write it to a file once and re-run it by path.
+        - Bound the output in the command itself — `| tail -40`, `| head`, `grep -c`, `wc -l`.
+        - For a large result, page it with `file_read`'s `offset`/`limit` instead of pulling it
+          whole.
+        - Pick one mechanism per task. If you are using terminalfs, do not also search the same
+          files with native `grep`/`read` tools; every switch is another turn.
+
+        ## Watching something long-running
+
+        `ls <mount>/cmd/<name>` tells you whether it is still going — `pid` and `kill` are there
+        while it runs, `exitcode` once it has stopped. Re-read `stdout` for more as it arrives,
+        opening it fresh each time; a handle held open will not see later output.
+        `echo x > <mount>/cmd/<name>/kill` ends it and keeps what it produced.
+
+        ## Do not clean up
+
+        Command directories are removed on their own about a minute after the last read, and a
+        name you never write to frees itself. Do not spend a turn on `rm -r`.
+
+        ## When a write fails
+
+        A mount can only report an error number — `Operation not permitted`, `File exists` — so
+        look under `<mount>/cmd/<name>/`:
+
+        - `command`, `status`, `reason` and nothing else — refused by a rule before it ran.
+          `reason` names the rule. There is no output because nothing ran. Reword it and use a
+          **different** name; the refused one stays taken until removed.
+        - `File exists` — the name has already run, refused or not, or someone else is writing it.
+
+        There is no terminal and no standard input: anything that prompts gets end-of-file. Pass
+        the flag that avoids the prompt (`--yes`, `--non-interactive`) or pipe the answer in
+        inside the command. Editors, pagers and REPLs cannot run here.
 
         """;
-
-    /// <summary>
-    /// opencode's skill: the write and the reads in one <c>execute</c> script, because every turn
-    /// re-bills the whole conversation and the script makes a command one turn instead of three.
-    /// </summary>
-    private const string OpenCodeSkillText =
-        SkillFrontmatter
-        + """
-          <where> Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
-          `<mount>/cmd/<name>/` as ordinary files.
-
-          ## Run a command — in one tool call
-
-          Do the write and the reads inside a single `execute` script. Never split them across
-          turns: every extra turn re-bills the whole conversation, so a command should cost one
-          turn, not two or three.
-
-          ```js
-          const M = "<mount>", n = "build"; // name: letters, digits, _ - . max 64
-          await tools.file_write({ path: `${M}/ctl/${n}`, content: "dotnet build 2>&1 | tail -40" });
-          const state = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/wait`     })).content;
-          const out   = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/stdout`   })).content;
-          const code  = JSON.parse(await tools.file_read({ path: `${M}/cmd/${n}/exitcode` })).content;
-          return { state, code, out };
-          ```
-
-          Read `wait` **before** `stdout`. `wait` blocks until the command stops and returns
-          `completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that
-          grows, so reading it first silently returns partial output. Add `stderr` only when you
-          need it.
-
-          Without a code-mode tool the same command costs three calls — write `ctl/<name>`, read
-          `wait`, read `stdout`. Still do not skip `wait`.
-
-          ## One name, one command
-
-          A name runs once. Sequence **inside** the command, not across names: `a && b | c` is one
-          command. Use a fresh name for the next one. Nothing runs until the ctl file is closed, so
-          write it in a single operation. `<mount>/cmd/<name>` does not exist until there is
-          something to report.
-
-          ## Keep the command short and the output small
-
-          What you generate is the most expensive thing you do, and re-reading output is the second.
-
-          - Prefer one `sed -i -e … -e …` or one `awk` over an inline `python3 <<EOF` heredoc: an
-            inline script is billed as generated text every time you send it. If you genuinely need
-            a script, write it to a file once and re-run it by path.
-          - Bound the output in the command itself — `| tail -40`, `| head`, `grep -c`, `wc -l`.
-          - For a large result, page it with `file_read`'s `offset`/`limit` instead of pulling it
-            whole.
-          - Pick one mechanism per task. If you are using terminalfs, do not also search the same
-            files with native `grep`/`read` tools; every switch is another turn.
-
-          ## Watching something long-running
-
-          `ls <mount>/cmd/<name>` tells you whether it is still going — `pid` and `kill` are there
-          while it runs, `exitcode` once it has stopped. Re-read `stdout` for more as it arrives,
-          opening it fresh each time; a handle held open will not see later output.
-          `echo x > <mount>/cmd/<name>/kill` ends it and keeps what it produced.
-
-          ## Do not clean up
-
-          Command directories are removed on their own about a minute after the last read, and a
-          name you never write to frees itself. Do not spend a turn on `rm -r`.
-
-          ## When a write fails
-
-          A mount can only report an error number — `Operation not permitted`, `File exists` — so
-          look under `<mount>/cmd/<name>/`:
-
-          - `command`, `status`, `reason` and nothing else — refused by a rule before it ran.
-            `reason` names the rule. There is no output because nothing ran. Reword it and use a
-            **different** name; the refused one stays taken until removed.
-          - `File exists` — the name has already run, refused or not, or someone else is writing it.
-
-          There is no terminal and no standard input: anything that prompts gets end-of-file. Pass
-          the flag that avoids the prompt (`--yes`, `--non-interactive`) or pipe the answer in
-          inside the command. Editors, pagers and REPLs cannot run here.
-
-          """;
 
     /// <summary>
     /// Claude Code's skill: the write and the reads in one Bash call, in a fixed shape.
@@ -505,83 +502,98 @@ internal static class TreeText
     /// out of the Bash call and check it. Loosen it here and a hook has to guess.
     /// </remarks>
     private const string ClaudeCodeSkillText =
-        SkillFrontmatter
-        + """
-          <where> Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
-          `<mount>/cmd/<name>/` as ordinary files.
+        """
+        ---
+        name: terminalfs
+        description: >-
+          Run shell commands by writing them to a mounted filesystem with the Bash tool, one call
+          per command. Use when you need a command to keep running while you do something else,
+          when its output is too large to read in one piece, or when you want to watch it as it
+          goes. Covers running a command, reading its output as it grows, waiting for it and
+          killing it.
+        ---
 
-          ## Run a command — in one Bash call
+        # Running commands through terminalfs
 
-          Write the command and read what it did in the same Bash call, in exactly this shape:
+        <where>
 
-          ```sh
-          cat > <mount>/ctl/build <<'CMD'
-          dotnet build 2>&1 | tail -40
-          CMD
-          cat <mount>/cmd/build/wait; cat <mount>/cmd/build/stdout
-          ```
+        Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
+        `<mount>/cmd/<name>/` as ordinary files.
 
-          Never split it across calls: every extra call re-reads the whole conversation, so a
-          command should cost one call, not two or three.
+        ## Run a command — in one Bash call
 
-          Keep to the shape — `cat >` into `ctl/<name>`, the command in a heredoc quoted as
-          `'CMD'`, then reads under `cmd/<name>/` — rather than `echo … >` or the Write tool. It is
-          the shape a permission check can read the command out of. The command can be several
-          lines, but none of them can be just `CMD`.
+        Write the command and read what it did in the same Bash call, in exactly this shape:
 
-          Read `wait` **before** `stdout`. `wait` blocks until the command stops and prints
-          `completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that
-          grows, so reading it first silently returns partial output. Put `2>&1` in the command
-          rather than reading `stderr` separately, and add `; cat <mount>/cmd/build/exitcode` to the
-          last line when the number matters.
+        ```sh
+        cat > <mount>/ctl/build <<'CMD'
+        dotnet build 2>&1 | tail -40
+        CMD
+        cat <mount>/cmd/build/wait; cat <mount>/cmd/build/stdout
+        ```
 
-          `running` means it is still going. Read again, still in one call:
-          `cat <mount>/cmd/build/wait; cat <mount>/cmd/build/stdout`.
+        Never split it across calls: every extra call re-reads the whole conversation, so a
+        command should cost one call, not two or three.
 
-          ## One name, one command
+        Keep to the shape — `cat >` into `ctl/<name>`, the command in a heredoc quoted as
+        `'CMD'`, then reads under `cmd/<name>/` — rather than `echo … >` or the Write tool. It is
+        the shape a permission check can read the command out of. The command can be several
+        lines, but none of them can be just `CMD`.
 
-          A name runs once. Sequence **inside** the command, not across names: `a && b | c` is one
-          command. Use a fresh name for the next one — letters, digits, `_`, `-` and `.`, up to 64.
-          Nothing runs until the ctl file is closed, and `<mount>/cmd/<name>` does not exist until
-          there is something to report.
+        Read `wait` **before** `stdout`. `wait` blocks until the command stops and prints
+        `completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that
+        grows, so reading it first silently returns partial output. Put `2>&1` in the command
+        rather than reading `stderr` separately, and add `; cat <mount>/cmd/build/exitcode` to the
+        last line when the number matters.
 
-          ## Keep the command short and the output small
+        `running` means it is still going. Read again, still in one call:
+        `cat <mount>/cmd/build/wait; cat <mount>/cmd/build/stdout`.
 
-          What you generate is the most expensive thing you do, and re-reading output is the second.
+        ## One name, one command
 
-          - Bound the output in the command itself — `| tail -40`, `| head`, `grep -c`, `wc -l`.
-          - Prefer one `sed -i -e … -e …` or one `awk` over an inline `python3` script: an inline
-            script is billed as generated text every time you send it. If you genuinely need a
-            script, write it to a file once and re-run it by path.
+        A name runs once. Sequence **inside** the command, not across names: `a && b | c` is one
+        command. Give the next one a name you have not used yet in this session — letters,
+        digits, `_`, `-` and `.`, up to 64 — not `build` again. Nothing runs until the ctl file is
+        closed, and `<mount>/cmd/<name>` does not exist until there is something to report.
 
-          ## Watching something long-running
+        ## Keep the command short and the output small
 
-          `ls <mount>/cmd/<name>` tells you whether it is still going — `pid` and `kill` are there
-          while it runs, `exitcode` once it has stopped. Read `stdout` again for more as it
-          arrives; `tail -n 40` works on it. `echo x > <mount>/cmd/<name>/kill` ends it and keeps
-          what it produced.
+        What you generate is the most expensive thing you do, and re-reading output is the second.
 
-          ## Do not clean up
+        - Bound the output in the command itself — `| tail -40`, `| head`, `grep -c`, `wc -l`.
+        - Prefer one `sed -i -e … -e …` or one `awk` over an inline `python3` script: an inline
+          script is billed as generated text every time you send it. If you genuinely need a
+          script, write it to a file once and re-run it by path.
 
-          Command directories are removed on their own about a minute after the last read, and a
-          name you never write to frees itself. Do not spend a call on `rm -r`.
+        ## Watching something long-running
 
-          ## When a write fails
+        `ls <mount>/cmd/<name>` tells you whether it is still going — `pid` and `kill` are there
+        while it runs, `exitcode` once it has stopped. Read `stdout` again for more as it
+        arrives; `tail -n 40` works on it. `echo x > <mount>/cmd/<name>/kill` ends it and keeps
+        what it produced.
 
-          A mount can only report an error number — `Operation not permitted`, `File exists` — so
-          the `cat >` fails with one and the reads after it find nothing. Look under
-          `<mount>/cmd/<name>/`:
+        ## Do not clean up
 
-          - `command`, `status`, `reason` and nothing else — refused by a rule before it ran.
-            `cat <mount>/cmd/<name>/reason` names the rule. There is no output because nothing
-            ran. Reword it and use a **different** name; the refused one stays taken until removed.
-          - `File exists` — the name has already run, refused or not, or someone else is writing it.
+        Command directories are removed on their own about a minute after the last read, and a
+        name you never write to frees itself. Do not spend a call on `rm -r`.
 
-          There is no terminal and no standard input: anything that prompts gets end-of-file. Pass
-          the flag that avoids the prompt (`--yes`, `--non-interactive`) or pipe the answer in
-          inside the command. Editors, pagers and REPLs cannot run here.
+        ## When a write fails
 
-          """;
+        A mount can only report an error number — `Operation not permitted`, `File exists` — and
+        the `cat >` fails with it. **When it does, what the reads after it print is not your
+        command's.** Look under `<mount>/cmd/<name>/`:
+
+        - `command`, `status`, `reason` and nothing else — refused by a rule before it ran.
+          `cat <mount>/cmd/<name>/reason` names the rule. There is no output because nothing
+          ran. Reword it and use a **different** name; the refused one stays taken until removed.
+        - `File exists` — the name has already run, refused or not, or someone else is writing it.
+          The reads print that earlier command's state and output. Run yours again under a name
+          you have not used.
+
+        There is no terminal and no standard input: anything that prompts gets end-of-file. Pass
+        the flag that avoids the prompt (`--yes`, `--non-interactive`) or pipe the answer in
+        inside the command. Editors, pagers and REPLs cannot run here.
+
+        """;
 
     /// <summary>
     /// A mount path as it is written into the skill: one trailing separator taken off, so

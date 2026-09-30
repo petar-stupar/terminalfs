@@ -256,10 +256,27 @@ public sealed class RenderTests : IDisposable
     {
         string text = await Skill(workspace, harness);
 
-        int wait = text.IndexOf("/wait", StringComparison.Ordinal);
-        int stdout = text.IndexOf("/stdout", StringComparison.Ordinal);
+        // The first example, not the prose around it, is what gets copied.
+        int example = text.IndexOf("```", StringComparison.Ordinal);
+        int wait = text.IndexOf("/wait", example, StringComparison.Ordinal);
+        int stdout = text.IndexOf("/stdout", example, StringComparison.Ordinal);
 
-        Assert.True(wait >= 0 && stdout > wait, "the first example reads stdout before wait");
+        Assert.True(example >= 0 && wait > example, "the skill has no example that reads wait");
+        Assert.True(stdout > wait, "the first example reads stdout before wait");
+    }
+
+    /// <summary>
+    /// In the Bash shape a failed write does not stop the reads after it, and when the name was
+    /// already used they print that command's output. Unless the skill says so, it reads as the
+    /// answer to the command that was refused.
+    /// </summary>
+    [Fact]
+    public async Task TheClaudeCodeSkillSaysAFailedWriteIsFollowedBySomebodyElsesOutput()
+    {
+        string text = await Skill(workspace, "claude-code");
+
+        Assert.Contains("what the reads after it print is not your\ncommand's", text, StringComparison.Ordinal);
+        Assert.Contains("The reads print that earlier command's state and output", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -313,6 +330,11 @@ public sealed class RenderTests : IDisposable
             openCode,
             StringComparison.Ordinal);
 
+        Assert.Contains(
+            "how to work out the",
+            await Text(SkillDirectory(workspace, "opencode").Find("index.md")!),
+            StringComparison.Ordinal);
+
         string claudeCode = await Skill(workspace, "claude-code");
 
         Assert.Contains("<mount>/ctl/build", claudeCode, StringComparison.Ordinal);
@@ -336,6 +358,7 @@ public sealed class RenderTests : IDisposable
         Assert.Contains("The tree is mounted at `/mnt/tfs`.", text, StringComparison.Ordinal);
         Assert.Contains("/mnt/tfs/ctl/", text, StringComparison.Ordinal);
         Assert.DoesNotContain("<mount>", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("<where>", text, StringComparison.Ordinal);
 
         Assert.Contains(
             "already the ones on this machine",

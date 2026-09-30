@@ -62,9 +62,9 @@ own, and both are called `terminalfs`:
 | `/skills/claude-code/terminalfs/SKILL.md` | one Bash call, in a fixed shape: `cat >` a heredoc into `ctl/<name>`, then `cat` `wait` and `stdout` |
 
 Either way a command costs one tool call rather than three. opencode reads skills straight off the
-mount: add `<mountpoint>/skills/opencode` to `skills.paths`. Claude Code only finds skills under its
-own configuration directory, so copy `skills/claude-code/terminalfs/SKILL.md` to
-`$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`.
+mount: add `skills/opencode` under the mountpoint to `skills.paths`. Claude Code only finds skills
+under its own configuration directory, so copy `skills/claude-code/terminalfs/SKILL.md` to
+`$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`, replacing `<mount>` in it if it is still there.
 
 A skill names the mountpoint outright when this server was told one — either because it did the
 mounting, or because `--path` said where you would. Otherwise it writes `<mount>` and says where the
@@ -247,7 +247,7 @@ terminalfs --mount-docker
 `--shell` and `--cwd` say what commands run under and where; `--keep` how long a finished command,
 or a name nobody wrote to, is kept; `--wait-timeout` how long a read of `wait` blocks; `--settle`
 how long a name that has been written to waits before it runs. `--path` says where the tree goes,
-and states it for the served skill even when you mount it yourself.
+and states it for the served skills even when you mount it yourself.
 
 ### A tree per session
 
