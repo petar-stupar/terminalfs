@@ -387,6 +387,8 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("cat {tree}/cmd/build/stdout 2>&1 > /tmp/x")]
     [InlineData("echo $(cat /etc/passwd); cat {tree}/cmd/build/stdout")]
     [InlineData("echo x > /tmp/x; cat {tree}/cmd/build/stdout")]
+    [InlineData("echo \"$(cat /etc/passwd)\"; cat {tree}/cmd/build/stdout")]
+    [InlineData("echo \"`id`\"; cat {tree}/cmd/build/stdout")]
     [InlineData("ls {tree}/ctl && cp notes.txt {tree}/ctl/x")]
     [InlineData("grep -e error --file=/home/u/.ssh/id_rsa {tree}/cmd/build/stdout")]
     [InlineData("grep -rf patterns {tree}/cmd/build/stdout")]
@@ -426,6 +428,7 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("echo \"=== last lines ===\"; tail -5 {tree}/cmd/build/stdout")]
     [InlineData("ls -la {tree}/ctl/")]
     [InlineData("ls {tree}")]
+    [InlineData("grep error {tree}/cmd/build/stdout || echo \"(no errors found)\"")]
     public void ReadsOfTheTreeAfterTheCommandRideAlong(string read)
     {
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
@@ -448,6 +451,19 @@ public sealed class ClaudeHookTests : IDisposable
         Settings(Project, """{ "permissions": { "allow": ["Bash(make)"] } }""");
 
         Assert.Equal("allow", Bash(before + Shape(Tree, "make") + "\n")?.Decision);
+    }
+
+    /// <summary>
+    /// A command that only reads this session's tree may name it: a model told to run everything
+    /// through the tree lists ctl/ that way. One that writes into it may not.
+    /// </summary>
+    [Fact]
+    public void ACommandThatOnlyReadsItsOwnTreeMayNameIt()
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        Assert.Equal("allow", Bash(Shape(Tree, $"ls -la {Tree}/ctl/"))?.Decision);
+        Assert.Equal("deny", Bash(Shape(Tree, $"ls {Tree}/ctl > {Tree}/ctl/x"))?.Decision);
     }
 
     /// <summary>A read after the command that reaches another session's tree says so.</summary>

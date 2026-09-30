@@ -268,8 +268,17 @@ internal static partial class TreeCalls
 
         // A command that itself writes into a tree would carry a second command past the check,
         // and one that reaches another session's tree is what a tree per session is there to stop.
+        // Unless all it does is read this session's own tree, which is what a model asked to run
+        // everything through the tree does with `ls <tree>/ctl`.
+        bool readsOwnTree = Pipelines(written).All(stages => TreeReads(stages, own));
+
         foreach (string mentioned in Paths(written, paths.Root))
         {
+            if (readsOwnTree && Under(mentioned, own) && !HasDotSegment(mentioned))
+            {
+                continue;
+            }
+
             if (Check(mentioned, own, paths, write: false) is { } inner)
             {
                 return inner;
@@ -342,7 +351,7 @@ internal static partial class TreeCalls
     /// nothing that could start a command of its own inside it.
     /// </summary>
     private static bool IsRead(string segment) =>
-        HarmlessRedirections().Replace(segment, " ").AsSpan().IndexOfAny(NotInARead) < 0
+        Literals().Replace(HarmlessRedirections().Replace(segment, " "), "''").AsSpan().IndexOfAny(NotInARead) < 0
         && ReadingPrograms.Contains(segment.Split(' ', '\t')[0], StringComparer.Ordinal);
 
     /// <summary>
@@ -566,6 +575,13 @@ internal static partial class TreeCalls
 
     [GeneratedRegex("""^echo\s+[^\s$`"'\\]+\s*>\s*(?<path>"[^"]*"|'[^']*'|\S+)$""")]
     private static partial Regex Kill();
+
+    /// <summary>
+    /// Quoted text a shell takes literally: anything in single quotes, and double-quoted text with
+    /// nothing in it that a shell would expand. Parentheses in <c>echo "(none)"</c> are not syntax.
+    /// </summary>
+    [GeneratedRegex(@"'[^']*'|""[^""$`\\]*""")]
+    private static partial Regex Literals();
 
     /// <summary><c>2&gt;&amp;1</c> and <c>2&gt;/dev/null</c>, which send a read's errors where it is going or nowhere.</summary>
     [GeneratedRegex(@"(?<=\s)2>(&1|/dev/null)(?=\s|$)")]
