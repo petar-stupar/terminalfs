@@ -186,7 +186,8 @@ Answering "always" to that prompt allows edits, not commands. To stop being aske
 command, write a `shell` allow rule.
 
 Both plugins also refuse what they cannot read a command out of, an edit anywhere in a tree, and
-anything aimed at another session's tree.
+anything aimed at another session's tree. In the same call as a command, only reads of the tree
+may follow it; a read of any other file has to be a call of its own.
 
 **The settings file** has the shape of Claude Code's `settings.local.json`, and only its `Bash(...)`
 deny rules count:

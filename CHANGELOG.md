@@ -16,8 +16,10 @@ refuses a tag whose version has no section here.
   `<runtime-dir>/terminalfs/<id>` and prints that path, and is idempotent for the same id. `stop
   --id <id>` stops the server, which kills its commands, unmounts, and removes the directory, and
   is safe when nothing is there. `gc` does the same for sessions whose server is gone, including
-  the commands a killed server left running, and with `--older-than <duration>` for live sessions
-  that old. Linux only for now: the macOS bridge serves one tree at a time. Sessions need the
+  the commands a killed server left running: the ones that still carry its token,
+  `TERMINALFS_SESSION_TOKEN`, in their environment, so a command started with a cleared
+  environment is left alone. With `--older-than <duration>` it also stops live sessions that
+  old. Linux only for now: the macOS bridge serves one tree at a time. Sessions need the
   settings file, `setsid`, and root or `sudo` for `mount` and `umount`.
 - **A Claude Code plugin: a tree per session, held to the session's own permission rules.**
   `claude plugin marketplace add petar-stupar/terminalfs` and `claude plugin install
@@ -44,7 +46,7 @@ refuses a tag whose version has no section here.
   it. The built-in `read` and `write` are made callable from `execute` as `file_read` and
   `file_write` (the plugin's `codemode` option names more), so a script writes commands and reads
   what they did in one turn; a write made on its own gets the command's state, exit code and
-  output added to its result. A write is judged on where opencode resolved its path to, however it was spelled.
+  the last 64 KiB of its output added to its result. A write is judged on where opencode resolved its path to, however it was spelled.
   Writes into another session's tree, edits and patches in a tree, and shell calls that write into
   one in any shape but the skill's are refused, and a `cd` out of the project in a command is
   asked about as opencode's shell tool would ask. An "always" answer to the prompt is opencode's
@@ -97,11 +99,14 @@ refuses a tag whose version has no section here.
   the default port instead, where it found another server's tree or none.
 - **`--unmount` reads a mount's port whole.** A server on port 4000 recognised a mount of port
   40001 as its own.
+- **A mount or unmount that times out says so.** Killing one that ran long could fail on the part
+  of it that belongs to root, the mount under a `sudo`, and the program ended with a stack trace.
 - **Command output is readable by its user alone.** It was written under `/tmp/terminalfs/<pid>`
   with default modes, so every user on the machine could read what a command printed, and the
   first user's `/tmp/terminalfs` kept anyone else's server from starting. It now goes under
   `$XDG_CACHE_HOME/terminalfs-output` (`~/.cache/terminalfs-output`), in directories only the
-  user can open; Windows keeps its temporary directory, which is the user's own.
+  user can open; Windows keeps its temporary directory, which is the user's own. What servers
+  that are gone left in `/tmp/terminalfs` is cleared the next time one starts.
 - **`--keep 0` no longer breaks a write tool that creates its file first.** A name nobody has
   written to yet is held for at least ten seconds, so the write after an empty create finds it.
 - **A command whose output cannot be made no longer takes the server down.** A full disk or no
