@@ -205,6 +205,10 @@ internal static class Program
                 await Sessions.CheckMountPointAsync(new SessionHost(), mountPath, CancellationToken.None)
                     .ConfigureAwait(false);
 
+                // Every command this server starts inherits it, which is how a stop that finds the
+                // server gone tells its commands from anything else in its old process group.
+                Environment.SetEnvironmentVariable(SessionRecord.TokenVariable, SessionRecord.NewToken());
+
                 try
                 {
                     return await ServeAsync(

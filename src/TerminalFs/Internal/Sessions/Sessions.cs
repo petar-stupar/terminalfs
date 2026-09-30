@@ -299,7 +299,7 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
 
             if (record.ServerIsGone())
             {
-                await SignalAsync("-KILL", -record.Pid, cancellationToken).ConfigureAwait(false);
+                await KillLeftoversAsync(record, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -399,6 +399,32 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
         }
     }
 
+    /// <summary>
+    /// Kills the commands a server that is gone left running: the processes in its group that
+    /// carry its token.
+    /// </summary>
+    /// <remarks>
+    /// Not the whole group. A group outlives its leader, and once the leader's pid is free again
+    /// another program's process can be given it and lead a group of its own by that number — a
+    /// daemon that forks twice does exactly that — and a record read after a reboot names a pid
+    /// that means nothing at all. The token is in the environment of every command the server
+    /// started and of nothing else.
+    /// </remarks>
+    private async Task KillLeftoversAsync(SessionRecord record, CancellationToken cancellationToken)
+    {
+        if (record.Token is not { Length: > 0 } token)
+        {
+            report($"session {record.Id}: its record is from an older terminalfs, so any commands its server left running were not looked for");
+
+            return;
+        }
+
+        foreach (int pid in ProcessTable.GroupMembersCarrying(record.Pid, SessionRecord.TokenVariable, token))
+        {
+            await SignalAsync("-KILL", pid, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private static async Task<bool> ExitedAsync(SessionRecord record, TimeSpan timeout, CancellationToken cancellationToken)
     {
         DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
@@ -417,22 +443,13 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
     }
 
     /// <summary>
-    /// Sends <paramref name="signal"/> to <paramref name="target"/>: a pid, or a process group
-    /// when negative.
+    /// Sends <paramref name="signal"/> to process <paramref name="target"/>.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// A group is only signalled once the record says its server is gone — no process has the
-    /// pid, or the one that does is its own zombie. The server runs in a session of its own, so
-    /// its pid is the group of every command it starts, and Linux does not hand out a pid that
-    /// is still in use as a group id: a group by that number holds this server's leftovers and
-    /// nobody else's. No such process is the ordinary answer when there are none.
-    /// </para>
-    /// <para>
     /// Targets from -1 to 1 are refused here as well as by record validation. They are init, the
     /// caller's own group, and every process the user may signal, and one check between them and
-    /// a <c>kill</c> is one too few.
-    /// </para>
+    /// a <c>kill</c> is one too few. No such process is the ordinary answer for one that has just
+    /// exited.
     /// </remarks>
     private async Task SignalAsync(string signal, int target, CancellationToken cancellationToken)
     {
