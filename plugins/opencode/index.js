@@ -87,6 +87,8 @@ export default {
     const calls = new Map()
     /** tool call id -> refusals given to calls under it, for an execute script to be told of. */
     const refused = new Map()
+    /** tool call id -> [{ call, message }] for writes from a script that were asked about and not yet seen to land. */
+    const asked = new Map()
     /** Where session trees live, once a session has started and said. */
     let root
     const mentionsTrees = (value) => JSON.stringify(value ?? "").includes(root ?? "/terminalfs")
@@ -213,6 +215,12 @@ export default {
         if (decision.effect === "deny" && decision.message && pending.some((call) => call.tool === "execute")) {
           refused.set(event.source.id, [...(refused.get(event.source.id) ?? []), decision.message])
         }
+        // A question declined — or, in a run with nobody to answer, rejected — reaches the script
+        // as the same bare "Unable to write". Kept until the write is seen to land.
+        if (decision.effect === "ask" && decision.message && pending.some((call) => call.tool === "execute")) {
+          const call = Number.isInteger(decision.call) ? sent[decision.call] : undefined
+          asked.set(event.source.id, [...(asked.get(event.source.id) ?? []), { call, message: decision.message }])
+        }
       } catch (error) {
         // A check that fell over is not a way through.
         event.effect = "deny"
@@ -228,15 +236,22 @@ export default {
       const call = pending[at]
       if (at >= 0) pending.splice(at, 1)
       if (pending.length === 0) calls.delete(event.id)
+      if (call && event.status === "completed" && asked.has(event.id)) {
+        asked.set(event.id, asked.get(event.id).filter((question) => question.call !== call))
+      }
 
       // A call refused inside an execute script reaches the script only as "Unable to write", so
       // the reasons are added to the script's own result when it ends. Whatever the script left
       // pending — a call the user declined, one that failed — ends with it.
       if (event.tool === "execute") {
-        const reasons = refused.get(event.id)
+        const unanswered = (asked.get(event.id) ?? []).map(
+          (question) => `${question.message}. It was not approved, so the write failed and the command did not run.`,
+        )
+        const reasons = [...(refused.get(event.id) ?? []), ...unanswered]
         refused.delete(event.id)
+        asked.delete(event.id)
         calls.delete(event.id)
-        if (reasons && event.status === "completed") event.result.content = appended(event.result.content, reasons.join("\n"))
+        if (reasons.length > 0 && event.status === "completed") event.result.content = appended(event.result.content, reasons.join("\n"))
         return
       }
       if (!call || event.status !== "completed" || typeof call.input?.content !== "string") return
