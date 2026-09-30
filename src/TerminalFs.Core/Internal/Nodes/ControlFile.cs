@@ -41,6 +41,9 @@ internal sealed class ControlFile : TerminalControl
     public override int Length => draft.Length;
 
     /// <inheritdoc />
+    public override string? Written => draft.Written;
+
+    /// <inheritdoc />
     public override ControlSession Open() => registry.OpenControl(draft, claiming);
 
     /// <inheritdoc />

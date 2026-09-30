@@ -332,6 +332,27 @@ public sealed class EndToEndTests
         Assert.Equal(Errno.EINVAL, refused.Error.Errno);
     }
 
+    /// <summary>
+    /// A write tool that checks what it wrote reads the file straight back, and a refusal there is
+    /// a write it reports as failed, for a command that is about to run. Reading gives back the
+    /// command; writing is still refused, so the name still runs once.
+    /// </summary>
+    [Fact]
+    public async Task AWrittenCommandCanBeReadBackButNotWrittenAgain()
+    {
+        await using Served served = await Served.StartAsync(settle: TimeSpan.FromSeconds(30));
+        await using NinePSession session = await served.ConnectAsync();
+
+        await RunAsync(session, "t1", "echo hello");
+
+        Assert.Equal("echo hello", await ReadAsync(session, "/ctl/t1"));
+
+        NinePException refused = await Assert.ThrowsAsync<NinePException>(
+            async () => await RunAsync(session, "t1", "echo two"));
+
+        Assert.Equal(Errno.EEXIST, refused.Error.Errno);
+    }
+
     [Fact]
     /// <summary>
     /// A name already taken is refused as <c>EEXIST</c>, not as "no such file". Answering the

@@ -94,6 +94,8 @@ EOF
 ```
 
 A name runs **once**. Once it has run, taking it again is refused until its directory is removed.
+Between the write and the run, reading `ctl/<name>` gives back the command as written, for a write
+tool that checks what it wrote; writing to it again is still refused.
 Sequencing belongs inside a command — `a && b | c` is one command.
 
 ### A name is only taken until something decides it
@@ -332,6 +334,31 @@ in `dontAsk` refused.
 another session's port in the runtime directory and speak 9P to it, and a path built at run time,
 reached through a link, or spelled a way the hook does not recognise is one it never sees. It keeps
 an agent that follows its instructions inside the rules you wrote for it.
+
+### opencode
+
+`plugins/opencode` is the same for opencode (v2): a tree for each session, and the session's own
+permission rules applied to what runs through it. Copy the directory to
+`~/.config/opencode/plugins/terminalfs/`, or name it in `plugins` in your opencode configuration.
+It needs `terminalfs` on the `PATH` and whatever sessions need.
+
+The tree is started before the session's first prompt and the agent told where it is, and it is
+stopped when the session is deleted or opencode's server stops. The agent gets the opencode skill:
+a command is written with the `write` tool to `<mount>/ctl/<name>`, and the write's result comes
+back with what the command did — its state, exit code and output — so a command is one call.
+
+opencode checks that write as an edit of a file, and its `shell` rules never see the command in it.
+The plugin hooks that check and answers it from the session's own rules, read as opencode reads
+them — the last rule that matches wins, every command in the line has to be allowed — so a deny
+refuses the write naming the rule, an ask shows opencode's own prompt with the command as the diff,
+and an allow lets it through. `permission.bash` rules count as `shell` rules, as opencode migrates
+them. A shell tool writing into the tree in the Claude Code skill's shape is checked the same way,
+and the same things are refused: another session's tree, an edit or a patch in a tree, and a write
+the plugin cannot read a command out of.
+
+opencode keeps an "always" answer to that prompt as an edit rule, not a shell one, so it does not
+carry over to the next command; write a `shell` allow rule for that. The same caveat as for Claude
+Code applies: this is a check an agent following its instructions stays inside, not a boundary.
 
 ### What it cannot do
 

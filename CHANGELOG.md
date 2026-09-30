@@ -34,10 +34,28 @@ refuses a tag whose version has no section here.
   are read: command-line flags, a skill's `allowed-tools`, approvals for the session and managed
   policy that is not a file are Claude Code's alone. It is a check an agent following its instructions stays inside,
   not a boundary: the agent runs as the same user as the server.
+- **An opencode plugin, in `plugins/opencode`, for opencode v2.** It gives each session a tree of
+  its own, started before the first prompt and stopped when the session is deleted or opencode's
+  server stops, with its path in the session's context and the opencode skill added to it. A
+  command written with the `write` tool to `ctl/<name>` is checked, inside opencode's own
+  permission check for that write, against the session's `shell` rules (and `permission.bash`,
+  which opencode migrates) as opencode would read them for its shell tool: a deny refuses the write
+  naming the rule, an ask shows opencode's prompt with the command as the diff, and an allow runs
+  it, after which the write's result carries the command's state, exit code and output — one call
+  per command. Writes into another session's tree, edits and patches in a tree, and shell calls
+  that write into one in any shape but the skill's are refused. `terminalfs hook opencode
+  session-start|session-end|check` is what it runs.
 - **`$TERMINALFS_RUNTIME_DIR`** says where session trees live, before `$XDG_RUNTIME_DIR`.
 
 ### Changed
 
+- **The opencode skill writes a command with the `write` tool**, in one call whose result the
+  plugin fills in with what the command did, rather than an `execute` script: opencode v2's code
+  mode cannot write files. Without the plugin it reads `wait`, then `stdout`. Where the skill does
+  not name the tree, it says the session context does.
+- **Reading back a command that has been written, before it runs, gives the command.** A write tool
+  that checks what it wrote — opencode's does, at once — got `EEXIST` and reported a write that
+  failed, for a command that was about to run. Writing to the name again is still refused.
 - **A skill per harness: `/skills/opencode/terminalfs/SKILL.md` and
   `/skills/claude-code/terminalfs/SKILL.md`.** The cheapest way to run a command depends on the
   tools a harness has, and one skill describing every way was longer and followed worse. opencode's

@@ -66,4 +66,29 @@ public sealed class PluginHooksTests
 
         Assert.Superset(new HashSet<string>(["Bash", "Write", "Edit"], StringComparer.Ordinal), new HashSet<string>(tools, StringComparer.Ordinal));
     }
+
+    /// <summary>The opencode plugin runs the same program, and the same pairing holds.</summary>
+    [Fact]
+    public void TheOpencodePluginRunsSubcommandsThisProgramHas()
+    {
+        string plugin = string.Empty;
+
+        for (DirectoryInfo? at = new(AppContext.BaseDirectory); at is not null && plugin.Length == 0; at = at.Parent)
+        {
+            string path = Path.Combine(at.FullName, "plugins", "opencode", "index.js");
+
+            if (File.Exists(path))
+            {
+                plugin = File.ReadAllText(path);
+            }
+        }
+
+        Assert.Contains("[\"hook\", \"opencode\", event]", plugin, StringComparison.Ordinal);
+
+        foreach (string @event in (string[])["session-start", "session-end", "check"])
+        {
+            Assert.Contains($"terminalfs(\"{@event}\"", plugin, StringComparison.Ordinal);
+            Assert.Contains($"terminalfs hook opencode {@event}", Program.HookUsage, StringComparison.Ordinal);
+        }
+    }
 }

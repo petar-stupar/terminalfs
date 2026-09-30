@@ -115,6 +115,37 @@ internal static partial class TreeCalls
             : new TreeCall.Mixed();
     }
 
+    /// <summary>
+    /// The sessions' directory written through the variables it came from, or <c>~</c>. A command
+    /// spelled that way reaches the tree without naming it, so it is refused rather than missed.
+    /// </summary>
+    internal static List<string> Spellings(SessionPaths paths, Func<string, string?> environment, string home)
+    {
+        var spellings = new List<string>();
+
+        foreach (string variable in (string[])["TERMINALFS_RUNTIME_DIR", "XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"])
+        {
+            string? value = variable == "HOME" ? home : environment(variable);
+
+            if (string.IsNullOrEmpty(value) || !paths.Root.StartsWith(value.TrimEnd('/') + "/", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string rest = paths.Root[value.TrimEnd('/').Length..];
+
+            spellings.Add("$" + variable + rest);
+            spellings.Add("${" + variable + "}" + rest);
+
+            if (variable == "HOME")
+            {
+                spellings.Add("~" + rest);
+            }
+        }
+
+        return spellings;
+    }
+
     /// <summary>What a <c>Write</c> call does.</summary>
     internal static TreeCall Write(string filePath, string content, SessionPaths paths, string id)
     {

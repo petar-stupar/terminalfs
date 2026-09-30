@@ -41,6 +41,18 @@ public sealed class PluginTests
     }
 
     /// <summary>
+    /// The opencode plugin adds its own copy of the skill, since opencode keeps skills per project
+    /// and a session's tree is somewhere different each time.
+    /// </summary>
+    [Fact]
+    public void TheOpencodePluginsSkillIsTheOneTheTreeServes()
+    {
+        string shipped = File.ReadAllText(Path.Combine(Repository, "plugins", "opencode", "SKILL.md"));
+
+        Assert.Equal(TreeText.Skill(SkillHarness.OpenCode, mountPath: null), shipped);
+    }
+
+    /// <summary>
     /// Claude Code keeps an installed plugin at the version it names, so a release that moved the
     /// program without the plugin would leave everybody on hooks written for the old one.
     /// </summary>

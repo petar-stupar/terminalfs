@@ -279,14 +279,18 @@ public sealed class RenderTests : IDisposable
         Assert.Contains("The reads print that earlier command's state and output", text, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// opencode's code mode cannot write files, so a command is one write, and the plugin fills its
+    /// result in. Without the plugin it takes the reads too, and those still go wait first.
+    /// </summary>
     [Fact]
-    public async Task TheOpenCodeSkillWritesAndReadsInOneExecuteScript()
+    public async Task TheOpenCodeSkillRunsACommandInOneWrite()
     {
         string text = await Skill(workspace, "opencode");
 
-        Assert.Contains("inside a single `execute` script", text, StringComparison.Ordinal);
-        Assert.Contains("await tools.file_write({ path: `${M}/ctl/${n}`", text, StringComparison.Ordinal);
-        Assert.Contains("const M = \"<mount>\"", text, StringComparison.Ordinal);
+        Assert.Contains("path:    <mount>/ctl/build", text, StringComparison.Ordinal);
+        Assert.Contains("the write's result also carries what the command did", text, StringComparison.Ordinal);
+        Assert.Contains("Without the plugin", text, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -325,10 +329,8 @@ public sealed class RenderTests : IDisposable
         string openCode = await Skill(workspace, "opencode");
 
         Assert.Contains("<mount>/ctl/<name>", openCode, StringComparison.Ordinal);
-        Assert.Contains(
-            "the path you read this skill from,\nwithout `/skills/opencode/terminalfs/SKILL.md` on the end",
-            openCode,
-            StringComparison.Ordinal);
+        Assert.Contains("Your session context names it", openCode, StringComparison.Ordinal);
+        Assert.Contains("without `/skills/opencode/terminalfs/SKILL.md` on the end", openCode, StringComparison.Ordinal);
 
         Assert.Contains(
             "how to work out the",

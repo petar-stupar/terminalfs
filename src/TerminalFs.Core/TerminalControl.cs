@@ -26,6 +26,17 @@ public abstract class TerminalControl : TerminalNode
     /// </summary>
     public abstract int Length { get; }
 
+    /// <summary>
+    /// The command written to it, once the name has been decided and while it waits to run; null
+    /// before then.
+    /// </summary>
+    /// <remarks>
+    /// For a caller that reads back what it wrote. An agent harness's write tool does, to check
+    /// the file, and a refusal there is reported as a write that failed — for a command that is
+    /// about to run.
+    /// </remarks>
+    public virtual string? Written => null;
+
     /// <summary>Gives it another name.</summary>
     /// <remarks>
     /// Here rather than only on the directory because 9P spells a rename two ways — <c>.L</c>

@@ -252,21 +252,44 @@ internal static class Program
     /// </remarks>
     private static async Task<int> HookAsync(string[] args)
     {
-        if (args is ["--help" or "-h"] or ["claude", "--help" or "-h"])
+        if (args is ["--help" or "-h"] or ["claude" or "opencode", "--help" or "-h"])
         {
             Console.WriteLine(HookUsage);
 
             return 0;
         }
 
-        if (args is not ["claude", "session-start" or "session-end" or "pre-tool-use"])
+        if (args is not (["claude", "session-start" or "session-end" or "pre-tool-use"]
+            or ["opencode", "session-start" or "session-end" or "check"]))
         {
-            throw new CliUsageException("hook: say 'claude session-start', 'claude session-end' or 'claude pre-tool-use'");
+            throw new CliUsageException(
+                "hook: say 'claude session-start|session-end|pre-tool-use' or 'opencode session-start|session-end|check'");
         }
 
         string json = await Console.In.ReadToEndAsync().ConfigureAwait(false);
         SessionPaths paths = SessionPaths.Default;
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        bool claude = args[0] == "claude";
+
+        if (args[1] == "check")
+        {
+            try
+            {
+                Console.WriteLine(new OpencodeHook(paths, Environment.GetEnvironmentVariable, home)
+                    .Check(OpencodeCheck.Parse(json)).Json());
+            }
+#pragma warning disable CA1031 // As for Claude Code below: an answer, never an exit code.
+            catch (Exception exception)
+#pragma warning restore CA1031
+            {
+                Console.WriteLine(
+                    (json.Contains(paths.Root, StringComparison.Ordinal) || json.Contains("/terminalfs", StringComparison.Ordinal)
+                        ? new OpencodeDecision("deny", $"terminalfs could not check this call: {exception.Message}")
+                        : OpencodeDecision.None).Json());
+            }
+
+            return 0;
+        }
 
         if (args[1] == "pre-tool-use")
         {
@@ -307,7 +330,7 @@ internal static class Program
         }
         catch (JsonException exception)
         {
-            throw new MountException($"the {args[1]} hook's input is not what Claude Code sends: {exception.Message}");
+            throw new MountException($"the {args[1]} hook's input is not what {(claude ? "Claude Code" : "the opencode plugin")} sends: {exception.Message}");
         }
 
         if (!SessionPaths.IsValidId(input.SessionId))
@@ -333,6 +356,7 @@ internal static class Program
         var sessions = new Sessions(paths, new SessionHost(), Console.Error.WriteLine);
 
         string context;
+        string? mounted = null;
 
         try
         {
@@ -342,6 +366,7 @@ internal static class Program
             }
 
             string mountPath = await StartSessionAsync(sessions, input.SessionId, input.WorkingDirectory).ConfigureAwait(false);
+            mounted = mountPath;
 
             context = $"This session's terminalfs tree is mounted at {mountPath}. Wherever the terminalfs skill "
                 + $"writes <mount>, the path is {mountPath}.";
@@ -355,7 +380,7 @@ internal static class Program
             context = $"terminalfs could not start a tree for this session, so the terminalfs skill cannot be used: {exception.Message}";
         }
 
-        Console.WriteLine(ClaudeHook.SessionContext(context));
+        Console.WriteLine(claude ? ClaudeHook.SessionContext(context) : OpencodeHook.Started(mounted, context));
 
         return 0;
     }
@@ -365,13 +390,18 @@ internal static class Program
         usage: terminalfs hook claude session-start
                terminalfs hook claude session-end
                terminalfs hook claude pre-tool-use
+               terminalfs hook opencode session-start
+               terminalfs hook opencode session-end
+               terminalfs hook opencode check
 
-        What the Claude Code plugin runs, with the hook's JSON on standard input.
+        What the Claude Code and opencode plugins run, with JSON on standard input.
 
           session-start   start this session's tree, and tell the agent where it is
           session-end     stop it
           pre-tool-use    check a command written to the tree against the session's
                           Claude Code permission rules, and refuse any other write into it
+          check           the same, for one of opencode's permission checks and the
+                          session's opencode rules
         """;
 
     /// <param name="options">What to serve and where.</param>
