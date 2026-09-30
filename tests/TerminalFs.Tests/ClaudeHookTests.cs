@@ -470,6 +470,19 @@ public sealed class ClaudeHookTests : IDisposable
         Assert.Equal("deny", Bash(Shape(Tree, $"ls {Tree}/ctl > {Tree}/ctl/x"))?.Decision);
     }
 
+    /// <summary>
+    /// A model that takes the tree for the project runs a project file from inside it. That is
+    /// refused, saying where commands run, not that the call could not be read.
+    /// </summary>
+    [Fact]
+    public void ACommandNamingAFileInsideTheTreeIsToldWhereCommandsRun()
+    {
+        ClaudeDecision? decision = Bash(Shape(Tree, $"sh {Tree}/build.sh"));
+
+        Assert.Equal("deny", decision?.Decision);
+        Assert.Contains("runs in the project's directory", decision!.Reason, StringComparison.Ordinal);
+    }
+
     /// <summary>A read after the command that reaches another session's tree says so.</summary>
     [Fact]
     public void AReadOfAnotherTreeAfterTheCommandSaysWhy()

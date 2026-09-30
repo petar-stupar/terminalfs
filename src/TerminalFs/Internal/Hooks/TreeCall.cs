@@ -279,6 +279,16 @@ internal static partial class TreeCalls
                 continue;
             }
 
+            // Most often a model that took the tree for the project, and ran `sh <tree>/build.sh`.
+            // Said as that, since "cannot read" sends it looking for a different way to write.
+            if (Under(mentioned, own) && !HasDotSegment(mentioned))
+            {
+                return new TreeCall.Refused(
+                    $"the command names {mentioned}, inside this session's tree. A command runs in the "
+                    + "project's directory, not in the tree, which holds only ctl/, cmd/ and skills/: name "
+                    + "the project's files as you would there, and read a command's output after it, not in it");
+            }
+
             if (Check(mentioned, own, paths, write: false) is { } inner)
             {
                 return inner;

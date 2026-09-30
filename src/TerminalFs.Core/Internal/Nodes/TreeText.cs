@@ -429,6 +429,8 @@ internal static class TreeText
 
         Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
         `<mount>/cmd/<name>/` as ordinary files.
+        The command runs in the project's directory, as it would in a shell there; the tree
+        holds only what terminalfs serves, so name the project's files as you would there.
 
         ## Run a command — in one tool call
 
@@ -536,6 +538,8 @@ internal static class TreeText
 
         Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
         `<mount>/cmd/<name>/` as ordinary files.
+        The command runs in the project's directory, as it would in a shell there; the tree
+        holds only what terminalfs serves, so name the project's files as you would there.
 
         ## Run a command — in one Bash call
 

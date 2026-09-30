@@ -69,9 +69,11 @@ for command, result in refusals:
     print(f"  refused: {first_line(command)[:100]}\n       -> {result.strip()[:220]}")
 
 # A call in the skill's shape is never refused for being unreadable: that is the hook misreading
-# the very call the skill teaches.
+# the very call the skill teaches. A refusal of what the command itself does — a deny rule, a path
+# the model got wrong — has a reason of its own and is the model's to fix, not a failure here.
+UNREADABLE = ("reached in a way this check cannot read", "named in a call that does more than read the tree")
 for command, result in refusals:
-    if SHAPE.match(first_line(command)) and ("cannot read" in result or "reached in a way" in result):
+    if SHAPE.match(first_line(command)) and any(phrase in result for phrase in UNREADABLE):
         failures.append(f"a call in the skill's shape was refused as unreadable: {first_line(command)}")
 
 ran = any(not e and re.search(r"^(completed|error)\b", r.strip(), re.M) for c, r, e in calls if "/ctl/" in c)
