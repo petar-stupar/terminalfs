@@ -240,6 +240,13 @@ internal static partial class TreeCalls
         {
             foreach (string read in Paths(line, paths.Root))
             {
+                // This session's own tree, ctl/ included, is for the read rules below to judge:
+                // after the command only reads may follow, so naming ctl/ cannot write to it.
+                if (Under(read, own) && !HasDotSegment(read))
+                {
+                    continue;
+                }
+
                 if (Check(read, own, paths, write: false) is { } unreadable)
                 {
                     return unreadable;

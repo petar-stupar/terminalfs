@@ -405,6 +405,8 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("cat /etc/passwd")]
     [InlineData("grep -r password /etc")]
     [InlineData("cat {tree}/cmd/build/stdout | cat /etc/passwd")]
+    [InlineData("M={tree}; cat $M/cmd/build/stdout")]
+    [InlineData("cp notes.txt {tree}/ctl/again")]
     public void AReadOfAnythingElseAfterTheCommandIsRefused(string read)
     {
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
@@ -422,6 +424,8 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("cat {tree}/cmd/build/exitcode")]
     [InlineData("cat {tree}/cmd/build/exitcode  # show how it went")]
     [InlineData("echo \"=== last lines ===\"; tail -5 {tree}/cmd/build/stdout")]
+    [InlineData("ls -la {tree}/ctl/")]
+    [InlineData("ls {tree}")]
     public void ReadsOfTheTreeAfterTheCommandRideAlong(string read)
     {
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
