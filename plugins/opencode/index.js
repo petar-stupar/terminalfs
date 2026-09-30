@@ -247,6 +247,9 @@ export default {
       if (!control || !path.startsWith(control)) return
 
       const name = path.slice(control.length)
+      // Only a command's own name: the raw path is the tool's, and anything else would read files
+      // opencode never checked into the result.
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$/.test(name)) return
       const read = (file) => readFile(`${tree.mount}/cmd/${name}/${file}`, "utf8").catch(() => undefined)
       const state = (await read("wait"))?.trim()
       const exit = (await read("exitcode"))?.trim()

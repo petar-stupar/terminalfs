@@ -139,7 +139,11 @@ public sealed class CommandRegistry : IDisposable
 
         PrivateDirectory(Path.GetDirectoryName(root)!);
         PrivateDirectory(root);
-        SweepAbandoned(Path.GetDirectoryName(root)!, root, quiet: false);
+        // Only where this program chose: the directories beside one somebody named are theirs.
+        if (options.OutputRoot is null)
+        {
+            SweepAbandoned(Path.GetDirectoryName(root)!, root, quiet: false);
+        }
 
         // Where output went before it moved under the user's cache, readable by everyone. What a
         // server that is gone left there is cleared once, here; another user's is not ours to
