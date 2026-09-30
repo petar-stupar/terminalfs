@@ -62,7 +62,10 @@ async function tail(path, limit) {
         cut = true
       }
     }
-    return { text: kept.toString("utf8"), cut }
+    // A cut can land inside a character; its continuation bytes would decode as U+FFFD.
+    let start = 0
+    while (cut && start < 3 && start < kept.length && (kept[start] & 0xc0) === 0x80) start++
+    return { text: kept.subarray(start).toString("utf8"), cut }
   } catch {
     return undefined
   }
