@@ -79,7 +79,11 @@ internal sealed record OpencodeCheck(
 /// <summary>What the plugin sets the check's effect to, or <c>none</c> to leave opencode's.</summary>
 /// <param name="Effect"><c>allow</c>, <c>ask</c>, <c>deny</c> or <c>none</c>.</param>
 /// <param name="Message">Why, for a refusal or a question.</param>
-internal sealed record OpencodeDecision(string Effect, string? Message = null)
+/// <param name="Call">
+/// Which of the calls sent this was judged on, when it was one of them: a call refused here never
+/// finishes as far as the plugin can see, and it drops the call on this.
+/// </param>
+internal sealed record OpencodeDecision(string Effect, string? Message = null, int? Call = null)
 {
     internal static OpencodeDecision None { get; } = new("none");
 
@@ -96,6 +100,11 @@ internal sealed record OpencodeDecision(string Effect, string? Message = null)
             if (Message is not null)
             {
                 writer.WriteString("message", Message);
+            }
+
+            if (Call is { } call)
+            {
+                writer.WriteNumber("call", call);
             }
 
             writer.WriteEndObject();
@@ -158,13 +167,20 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
 
         TreeCall call = Classify(check);
 
-        return call switch
+        OpencodeDecision decision = call switch
         {
             TreeCall.Refused refused => new OpencodeDecision("deny", "terminalfs: " + refused.Reason),
             TreeCall.Harmless => new OpencodeDecision("allow"),
             TreeCall.Run run => Decide(run, check.Rules, check.Directory),
             _ => OpencodeDecision.None,
         };
+
+        // The one call a decision can be pinned on: a single write, or a single shell command.
+        OpencodeCall[] judged = [.. check.Calls.Where(pending =>
+            check.Action == "edit" ? pending.Field("content") is not null : pending.Field("command") is not null)];
+        int index = judged.Length == 1 ? check.Calls.ToList().IndexOf(judged[0]) : -1;
+
+        return index >= 0 && decision.Effect != "none" ? decision with { Call = index } : decision;
     }
 
     private TreeCall Classify(OpencodeCheck check)
@@ -203,22 +219,22 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
 
             foreach (string target in inTrees)
             {
-                OpencodeCall[] matching = [.. writes.Where(call => Resolved(call.Field("path") ?? call.Field("filePath"), check.Directory) == target)];
-
-                // The write this check is for: the one whose path lands where opencode resolved it
-                // to, or the only one there is. Several at once that cannot be told apart are not
-                // guessed between, because the guess would check one command and run another.
-                OpencodeCall? write = matching.Length == 1 ? matching[0]
-                    : matching.Length == 0 && writes.Length == 1 ? writes[0]
-                    : null;
-
-                TreeCall call = write is not null
-                    ? TreeCalls.Write(target, write.Field("content")!, paths, check.SessionId)
-                    : writes.Length > 1
-                        ? new TreeCall.Refused(
-                            "several writes were made at once and this one cannot be told from the others. Write a "
-                            + "session tree's files one at a time")
-                        : TreeCalls.Edit(target, paths);
+                // The write this check is for is the one write under way. Several at once are not
+                // matched to it by path: a path can be spelled so that it reads one way here and
+                // another way to opencode, and a wrong match would check one command and run
+                // another.
+                // An edit or a patch under way at the same time could be what this check is about,
+                // and neither is let into a tree.
+                TreeCall call = check.Calls.Any(pending => pending.Tool is "edit" or "patch" or "apply_patch")
+                    ? TreeCalls.Edit(target, paths)
+                    : writes.Length switch
+                    {
+                        1 => TreeCalls.Write(target, writes[0].Field("content")!, paths, check.SessionId),
+                        0 => TreeCalls.Edit(target, paths),
+                        _ => new TreeCall.Refused(
+                            "several writes were under way at once. Write a session tree's files one at a time, "
+                            + "awaiting each before the next"),
+                    };
 
                 if (call is not TreeCall.Elsewhere)
                 {
@@ -255,13 +271,6 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
                     + "commands that reach a session tree one at a time"),
         };
     }
-
-    /// <summary>A tool's path as opencode resolves it: <c>~</c> is home, anything relative is the session's directory.</summary>
-    private string? Resolved(string? path, string directory) =>
-        string.IsNullOrWhiteSpace(path) ? null
-        : path == "~" ? home
-        : path.StartsWith("~/", StringComparison.Ordinal) ? Path.GetFullPath(Path.Combine(home, path[2..]))
-        : Path.GetFullPath(path, directory);
 
     private static bool Under(string path, string directory) =>
         path == directory || path.StartsWith(directory + "/", StringComparison.Ordinal);

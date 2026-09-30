@@ -346,9 +346,11 @@ The tree is started before the session's first prompt and the agent told where i
 stopped when the session is deleted or opencode's server stops. The agent gets the opencode skill,
 which writes a command and reads what it did in one `execute` script. opencode's code mode leaves
 its built-in file tools out, so the plugin copies `read` and `write` into it as `file_read` and
-`file_write`: the copies are the built-ins, permission checks and all, and the built-ins stay
-ordinary tools too. `{ "codemode": ["read", "write", "grep", "glob"] }` in the plugin's options
-copies more, and `[]` none. A command written with the plain `write` tool gets its state, exit
+`file_write`: the copies run the built-ins' own code, permission checks and all, a rule that
+switches a built-in off switches its copy off too, and the built-ins stay ordinary tools. The
+plugin's `codemode` option copies others, or none with `[]` — in the configuration, as
+`"plugins": [{ "package": "<path>/plugins/opencode", "options": { "codemode": ["read", "write", "grep"] } }]`.
+Writes into a tree from one script are checked one at a time; several at once are refused. A command written with the plain `write` tool gets its state, exit
 code and output added to the write's result, so it is one call that way too.
 
 opencode checks that write as an edit of a file, and its `shell` rules never see the command in it.

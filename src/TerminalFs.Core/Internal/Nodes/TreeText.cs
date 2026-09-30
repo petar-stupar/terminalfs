@@ -435,7 +435,8 @@ internal static class TreeText
         Do the write and the reads inside a single `execute` script, with `tools.file_write` and
         `tools.file_read` — the terminalfs plugin puts opencode's own write and read there. Never
         split them across turns: every extra turn re-bills the whole conversation, so a command
-        should cost one turn, not two or three, and several commands can share one script.
+        should cost one turn, not two or three. Several commands can share one script; await each
+        write to the tree before the next, since writes to it at once are refused.
 
         ```js
         const M = "<mount>", n = "build"; // name: letters, digits, _ - . max 64

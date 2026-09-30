@@ -106,7 +106,13 @@ export default {
         const tool = editor.get(id)
         if (!tool || editor.get(`file_${id}`)) continue
         const { id: _, ...info } = tool
-        editor.add({ ...info, name: `file_${id}`, options: { ...info.options, codemode: true, pinned: true } })
+        // Named after the built-in's permission, so a rule that switches the built-in off switches
+        // its copy off too.
+        editor.add({
+          ...info,
+          name: `file_${id}`,
+          options: { ...info.options, permission: info.options?.permission ?? id, codemode: true, pinned: true },
+        })
       }
     })
 
@@ -116,7 +122,7 @@ export default {
         id: "terminalfs",
         name: "terminalfs",
         description:
-          "Run shell commands by writing them to this session's terminalfs tree with the write tool, one call per command.",
+          "Run shell commands through this session's terminalfs tree: write a command and read what it did in one execute script.",
         path: skillPath,
         content: skill,
       })
@@ -149,18 +155,27 @@ export default {
       // anything else only when it names where trees live.
       if (event.action !== "shell" && !mentionsTrees(event.resources) && !mentionsTrees(pending)) return
 
+      // What is sent is what the answer's call index refers to, whatever comes and goes meanwhile.
+      const sent = [...pending]
       try {
         const decision = await terminalfs("check", {
           session_id: event.sessionID,
           directory,
           action: event.action,
           resources: event.resources,
-          calls: pending,
+          calls: sent,
           rules: await rules(event.sessionID, event.agent),
         })
         if (decision.effect === "none") return
         event.effect = decision.effect
         if (decision.message) event.message = decision.message
+        // A call refused here never reaches execute.after, and one left pending would be counted
+        // against the next write the script makes.
+        if (decision.effect === "deny" && Number.isInteger(decision.call)) {
+          const at = pending.indexOf(sent[decision.call])
+          if (at >= 0) pending.splice(at, 1)
+          if (pending.length === 0) calls.delete(event.source.id)
+        }
         // Kept for the script a refused call was made from, which is told when it ends.
         if (decision.effect === "deny" && decision.message && pending.some((call) => call.tool === "execute")) {
           refused.set(event.source.id, [...(refused.get(event.source.id) ?? []), decision.message])
@@ -182,10 +197,12 @@ export default {
       if (pending.length === 0) calls.delete(event.id)
 
       // A call refused inside an execute script reaches the script only as "Unable to write", so
-      // the reasons are added to the script's own result when it ends.
+      // the reasons are added to the script's own result when it ends. Whatever the script left
+      // pending — a call the user declined, one that failed — ends with it.
       if (event.tool === "execute") {
         const reasons = refused.get(event.id)
         refused.delete(event.id)
+        calls.delete(event.id)
         if (reasons && event.status === "completed") event.result.content = appended(event.result.content, reasons.join("\n"))
         return
       }

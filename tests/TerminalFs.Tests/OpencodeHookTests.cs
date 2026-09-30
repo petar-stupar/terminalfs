@@ -153,6 +153,69 @@ public sealed class OpencodeHookTests
         Assert.Equal("allow", Check("edit", "write", new { path = $"{Tree}/ctl/y", content = "cd src && ls" }, rules).Effect);
     }
 
+    private OpencodeDecision CheckCalls(string action, object[] calls, string[] resources, object[]? rules = null) =>
+        new OpencodeHook(paths, _ => null, "/home/agent").Check(OpencodeCheck.Parse(JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["session_id"] = Session,
+            ["directory"] = "/home/agent/project",
+            ["action"] = action,
+            ["resources"] = resources,
+            ["calls"] = calls,
+            ["rules"] = rules ?? [Rule("*", "allow"), Rule("uname *", "deny")],
+        })));
+
+    /// <summary>
+    /// A script run by execute makes its calls under its own id, so a check arrives with every call
+    /// under way; the one write among them is the one it is about, and the rest are no guide.
+    /// </summary>
+    [Fact]
+    public void AWriteFromAScriptIsJudgedOnItsOwnContent()
+    {
+        object[] calls =
+        [
+            new { tool = "execute", input = new { code = "..." } },
+            new { tool = "file_read", input = new { path = $"{Tree}/cmd/a/wait" } },
+            new { tool = "file_write", input = new { path = $"{Tree}/ctl/b", content = "uname -a" } },
+        ];
+
+        OpencodeDecision decision = CheckCalls("edit", calls, [$"{Tree}/ctl/b"]);
+
+        Assert.Equal("deny", decision.Effect);
+        Assert.Equal(2, decision.Call);
+    }
+
+    /// <summary>
+    /// Two writes under way at once are not told apart by path: a path can be spelled to read one
+    /// way here and another to opencode, and a wrong match would check one command and run the other.
+    /// </summary>
+    [Fact]
+    public void SeveralWritesAtOnceAreRefusedRatherThanGuessedBetween()
+    {
+        object[] calls =
+        [
+            new { tool = "file_write", input = new { path = $"{Tree}/ctl/t/", content = "uname -a" } },
+            new { tool = "file_write", input = new { path = $"{Tree}/ctl/t", content = "echo fine" } },
+        ];
+
+        OpencodeDecision decision = CheckCalls("edit", calls, [$"{Tree}/ctl/t"]);
+
+        Assert.Equal("deny", decision.Effect);
+        Assert.Contains("one at a time", decision.Message, StringComparison.Ordinal);
+        Assert.Null(decision.Call);
+    }
+
+    [Fact]
+    public void AnEditUnderWayAlongsideAWriteKeepsTheTreeClosed()
+    {
+        object[] calls =
+        [
+            new { tool = "file_write", input = new { path = "/home/agent/project/notes", content = "echo fine" } },
+            new { tool = "edit", input = new { path = $"{Tree}/ctl/x", oldString = "a", newString = "b" } },
+        ];
+
+        Assert.Equal("deny", CheckCalls("edit", calls, [$"{Tree}/ctl/x"]).Effect);
+    }
+
     [Fact]
     public void ACheckThatDoesNotTouchTheTreesIsLeftToOpencode()
     {
