@@ -369,8 +369,12 @@ internal static partial class TreeCalls
             {
                 string name = word.Split('=')[0];
 
+                // GNU programs take any unambiguous start of a long option for the whole of it, so
+                // --f is --files0-from to wc and --fil is --file to grep.
                 if (word.Contains('/', StringComparison.Ordinal)
                     || FileOptions.Contains(name, StringComparer.Ordinal)
+                    || (name.Length > 2 && name.StartsWith("--", StringComparison.Ordinal)
+                        && FileOptions.Any(option => option.StartsWith(name, StringComparison.Ordinal)))
                     || (program == "grep" && !word.StartsWith("--", StringComparison.Ordinal) && word.AsSpan(1).Contains('f')))
                 {
                     return false;
@@ -407,8 +411,9 @@ internal static partial class TreeCalls
     }
 
     /// <summary>
-    /// The words of <paramref name="segment"/>, quotes taken off; null when it holds anything this
-    /// cannot take apart as a shell would: a backslash, or a quote that is never closed.
+    /// The words of <paramref name="segment"/>, quotes taken off and a trailing comment left out;
+    /// null when it holds anything this cannot take apart as a shell would: a backslash, or a
+    /// quote that is never closed.
     /// </summary>
     private static List<string>? Words(string segment)
     {
@@ -438,6 +443,11 @@ internal static partial class TreeCalls
             else if (character == '\\')
             {
                 return null;
+            }
+            else if (character == '#' && !inWord)
+            {
+                // A comment, to the end of the line: nothing in it is read or run.
+                break;
             }
             else if (char.IsWhiteSpace(character))
             {

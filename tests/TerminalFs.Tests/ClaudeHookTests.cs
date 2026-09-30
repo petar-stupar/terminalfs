@@ -380,6 +380,9 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("grep -f /etc/passwd {tree}/cmd/build/stdout")]
     [InlineData("grep -e error --file=/home/u/.ssh/id_rsa {tree}/cmd/build/stdout")]
     [InlineData("grep -rf patterns {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | wc --f=list")]
+    [InlineData("grep --fil=patterns {tree}/cmd/build/stdout")]
+    [InlineData("grep -e x --exclude-f=names {tree}/cmd/build/stdout")]
     [InlineData("cat {tree}/cmd/build/stdout | cat /etc/passwd")]
     [InlineData("tail -n 40")]
     [InlineData("grep \"unclosed {tree}/cmd/build/stdout")]
@@ -407,6 +410,7 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("cat {tree}/cmd/build/stdout | tail -40")]
     [InlineData("grep -A 3 -n error {tree}/cmd/build/stdout")]
     [InlineData("cat {tree}/cmd/build/exitcode")]
+    [InlineData("cat {tree}/cmd/build/exitcode  # show how it went")]
     public void ReadsOfTheTreeAfterTheCommandRideAlong(string read)
     {
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
