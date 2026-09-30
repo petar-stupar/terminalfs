@@ -366,6 +366,39 @@ public sealed class ClaudeHookTests : IDisposable
     public void ReadingTheTreeAlongsideSomethingElseIsLeftToTheHarness() =>
         Assert.Null(Bash($"cat {Tree}/cmd/build/stdout && rm -rf build"));
 
+    /// <summary>
+    /// A read of any other file in the same call is not the tree's to approve: an allow would carry
+    /// it past every rule Claude Code has for reading files.
+    /// </summary>
+    [Theory]
+    [InlineData("cat {tree}/cmd/build/wait; cat /etc/passwd")]
+    [InlineData("cat {tree}/cmd/build/wait; grep -r secret /home")]
+    [InlineData("cat {tree}/cmd/build/stdout notes.txt")]
+    [InlineData("ls {tree}/cmd; ls")]
+    [InlineData("cat {tree}/cmd/build/../../../etc/passwd")]
+    [InlineData("echo $(id) > {tree}/cmd/build/kill")]
+    public void ReadingAnythingButTheTreeIsNeverAllowed(string command) =>
+        Assert.NotEqual("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
+
+    /// <summary>After the command, only reads of the tree ride along with its approval.</summary>
+    [Theory]
+    [InlineData("cat ~/.claude/settings.json")]
+    [InlineData("cat /etc/passwd")]
+    [InlineData("grep -r password /etc")]
+    public void AReadOfAnythingElseAfterTheCommandIsRefused(string read)
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        Assert.Equal("deny", Bash(Shape(Tree, "ls") + $"; {read}")?.Decision);
+    }
+
+    [Theory]
+    [InlineData("grep -n error {tree}/cmd/build/stdout")]
+    [InlineData("head -c 100 {tree}/cmd/build/stderr")]
+    [InlineData("wc -l {tree}/cmd/build/stdout {tree}/cmd/build/stderr")]
+    public void ReadingTheTreeWithOptionsIsAllowed(string command) =>
+        Assert.Equal("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
+
     [Theory]
     [InlineData("dotnet build")]
     [InlineData("cat > /tmp/notes <<'CMD'\nhello\nCMD")]

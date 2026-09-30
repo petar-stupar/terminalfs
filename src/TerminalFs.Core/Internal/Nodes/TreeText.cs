@@ -555,10 +555,10 @@ internal static class TreeText
         `'CMD'`, then reads under `cmd/<name>/` — rather than `echo … >` or the Write tool. It is
         the shape a permission check can read the command out of: the terminalfs plugin checks it
         against your permission rules as if you had run it with Bash, and refuses a write into
-        the tree in any other shape, or anything but reads after it in the same call. The command
-        can be several lines, but none of them can be just `CMD`. Write the path out in full each
-        time, not through a variable or after a `cd`: the check cannot read a command written
-        to a path it cannot see, and refuses the ones it notices.
+        the tree in any other shape, or anything after it in the same call but reads of this
+        tree. The command can be several lines, but none of them can be just `CMD`. Write the
+        path out in full each time, not through a variable or after a `cd`: the check cannot read
+        a command written to a path it cannot see, and refuses the ones it notices.
 
         A refusal says why. `denied by` names the rule and the settings file it is in; don't
         reword the command to get round it.

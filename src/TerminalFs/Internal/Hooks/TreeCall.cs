@@ -110,7 +110,7 @@ internal static partial class TreeCalls
             }
         }
 
-        return Segments(command).All(segment => IsRead(segment) || IsKill(segment, own))
+        return Segments(command).All(segment => ReadsOnly(segment, own) || IsKill(segment, own))
             ? new TreeCall.Harmless()
             : new TreeCall.Mixed();
     }
@@ -212,10 +212,7 @@ internal static partial class TreeCalls
         {
             foreach (string segment in Segments(line))
             {
-                bool reads = IsRead(segment)
-                    && Paths(segment, paths.Root).All(read => Check(read, own, paths, write: false) is null);
-
-                if (!reads)
+                if (!ReadsOnly(segment, own))
                 {
                     return new TreeCall.Refused(
                         $"'{segment}' follows the command in the same call. Only reads under {own}/cmd/ "
@@ -304,6 +301,56 @@ internal static partial class TreeCalls
         segment.AsSpan().IndexOfAny(NotInARead) < 0
         && ReadingPrograms.Contains(segment.Split(' ', '\t')[0], StringComparer.Ordinal);
 
+    /// <summary>
+    /// A read of this session's own tree and of nothing else. An allow given for a call has to be
+    /// for what is in the tree: a read of any other file rides through on it otherwise, past every
+    /// rule the agent's harness has for reading files.
+    /// </summary>
+    /// <remarks>
+    /// Every argument has to be a path under <paramref name="own"/>, bar options, a number an option
+    /// takes (<c>tail -n 40</c>), and <c>grep</c>'s pattern. A word that still holds a quote after
+    /// splitting on whitespace is a quoted phrase this cannot take apart, and makes it not a read.
+    /// A read naming no path at all reads the working directory, which is not the tree.
+    /// </remarks>
+    private static bool ReadsOnly(string segment, string own)
+    {
+        if (!IsRead(segment))
+        {
+            return false;
+        }
+
+        string[] words = segment.Split([' ', '	'], StringSplitOptions.RemoveEmptyEntries);
+        bool pattern = words[0] == "grep";
+        int read = 0;
+
+        foreach (string word in words[1..])
+        {
+            if (word.StartsWith('-') || (word.All(char.IsAsciiDigit) && !pattern))
+            {
+                continue;
+            }
+
+            if (pattern)
+            {
+                pattern = false;
+                continue;
+            }
+
+            string path = Unquoted(word);
+
+            if (path.Contains('"', StringComparison.Ordinal) || path.Contains('\\', StringComparison.Ordinal)
+                || path.Contains('\'', StringComparison.Ordinal) || Opaque(path)
+                || HasDotSegment(path) || !Under(Normalised(path), own))
+            {
+                return false;
+            }
+
+            read++;
+        }
+
+        return read > 0;
+    }
+
     /// <summary><c>echo x &gt; &lt;tree&gt;/cmd/&lt;name&gt;/kill</c>, which ends a command.</summary>
     private static bool IsKill(string segment, string own) =>
         Kill().Match(segment) is { Success: true } kill && IsKillPath(Unquoted(kill.Groups["path"].Value), own);
@@ -356,7 +403,7 @@ internal static partial class TreeCalls
     [GeneratedRegex("""^cat\s*>\s*(?<path>"[^"]*"|'[^']*'|[^\s"'<>]+)\s*<<\s*'CMD'$""")]
     private static partial Regex Shape();
 
-    [GeneratedRegex("""^echo\s+\S+\s*>\s*(?<path>"[^"]*"|'[^']*'|\S+)$""")]
+    [GeneratedRegex("""^echo\s+[^\s$`"'\\]+\s*>\s*(?<path>"[^"]*"|'[^']*'|\S+)$""")]
     private static partial Regex Kill();
 
     [GeneratedRegex(@"&&|\|\||\|&|;|\||&|\n")]
