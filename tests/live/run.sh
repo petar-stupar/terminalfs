@@ -16,21 +16,26 @@
 #   TFS_LIVE_OPENCODE_HOME   a directory opencode v2 is logged in under (its HOME and XDG
 #                            directories are below it); see CONTRIBUTING.md
 #   TFS_LIVE_OPENCODE_MODEL  opencode model, opencode/claude-haiku-4-5 by default
-#   TFS_LIVE_KEEP=1          keep the scratch directory and print where it is
+#   TFS_LIVE_KEEP=1          keep the scratch directory, which a failed run keeps anyway
+#   TFS_LIVE_VERBOSE=1       show each run's refusals, not only under a failed test
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 if [ $# -eq 0 ]; then harnesses=(claude opencode); else harnesses=("$@"); fi
 
-echo "building terminalfs"
+echo "building terminalfs..."
 dotnet build "$repo/src/TerminalFs" -c Debug -warnaserror -v quiet -nologo >/dev/null || { echo "build failed"; exit 1; }
 binary="$repo/src/TerminalFs/bin/Debug/net10.0/terminalfs"
 
+failed=0
+skipped=0
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/terminalfs-live.XXXXXX")
+export TFS_LIVE_TALLY="$scratch/tally"
 cleanup() {
     TERMINALFS_RUNTIME_DIR="$scratch/rt" "$binary" session gc --older-than 1s >/dev/null 2>&1
-    if [ "${TFS_LIVE_KEEP:-}" = 1 ]; then echo "kept $scratch"; else rm -rf "$scratch"; fi
+    # A failed run's transcripts are what explain it, so they are kept.
+    if [ "${TFS_LIVE_KEEP:-}" = 1 ] || [ "$failed" -ne 0 ]; then echo "transcripts kept in $scratch"; else rm -rf "$scratch"; fi
 }
 trap cleanup EXIT
 
@@ -71,13 +76,13 @@ SH
 
 prompt="Use the terminalfs skill for every shell command in this task, not a shell tool on its own. 1) Run 'sh build.sh' through your session's terminalfs tree, and in the same call show only the last 5 lines of its output and any lines containing 'error'. 2) Tell me its exit code. 3) Run 'rm -rf out' through the tree. 4) List your tree's ctl directory. Report briefly what happened at each step, including any refusals and their reasons. Do not retry a refused step more than once."
 
-failed=0
-skipped=0
 
 for harness in "${harnesses[@]}"; do
     case "$harness" in
     claude)
-        command -v claude >/dev/null || { echo "claude: not installed, skipped"; skipped=1; continue; }
+        command -v claude >/dev/null || { echo "SKIP  claude: not installed"; skipped=1; continue; }
+        echo
+        echo "Claude Code"
         PATH="$scratch/bin:$PATH" terminalfs plugin install claude --dir "$scratch/claude-plugin" >/dev/null
         # run: everything no rule refuses runs. ask: a command no rule decides asks, and -p cannot
         # answer. acceptEdits approves edits, not commands, so it asks too. auto leaves such a
@@ -98,11 +103,14 @@ for harness in "${harnesses[@]}"; do
         ;;
     opencode)
         if [ -z "${TFS_LIVE_OPENCODE:-}" ] || [ -z "${TFS_LIVE_OPENCODE_HOME:-}" ]; then
-            echo "opencode: skipped; set TFS_LIVE_OPENCODE (an opencode v2 binary) and TFS_LIVE_OPENCODE_HOME"
-            echo "          (a home it is logged in under). CONTRIBUTING.md says how to log in once."
+            echo
+            echo "SKIP  opencode: set TFS_LIVE_OPENCODE (an opencode v2 binary) and TFS_LIVE_OPENCODE_HOME"
+            echo "      (a home it is logged in under); CONTRIBUTING.md says how to log in once."
             skipped=1
             continue
         fi
+        echo
+        echo "opencode"
         oc="$TFS_LIVE_OPENCODE_HOME"
         rm -rf "$oc/config/opencode/plugins/terminalfs"
         PATH="$scratch/bin:$PATH" terminalfs plugin install opencode --dir "$oc/config/opencode/plugins/terminalfs" >/dev/null
@@ -123,12 +131,9 @@ for harness in "${harnesses[@]}"; do
     esac
 done
 
-if [ $failed -ne 0 ]; then
-    echo "FAILED: see the refusals above; TFS_LIVE_KEEP=1 keeps the transcripts"
-elif [ $skipped -ne 0 ]; then
-    echo "passed, with a harness skipped"
-else
-    echo "passed"
-fi
+passes=$(grep -c '^PASS' "$TFS_LIVE_TALLY" 2>/dev/null)
+fails=$(grep -c '^FAIL' "$TFS_LIVE_TALLY" 2>/dev/null)
+echo
+echo "${passes:-0} passed, ${fails:-0} failed$([ $skipped -ne 0 ] && echo ", a harness skipped")"
 
 exit $failed

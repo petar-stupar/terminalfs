@@ -59,13 +59,17 @@ tree and read its output in the same call, run an `rm` that a deny rule refuses,
 | `acceptEdits` | `acceptEdits` | — | the same as `ask`: it approves edits, not commands |
 | `auto` | `auto`, with Sonnet | `--auto`, same rules as `ask` | Claude Code's classifier decides, and either outcome is reported; opencode runs it |
 
-In every scenario `rm` is refused. Claude Code does not offer auto mode with every model and falls back to `default` without saying so, so the `auto` scenario runs with Sonnet and each Claude Code run is checked to have been in the mode it asked for. The checks read the project, not the model's account: `build.sh`
-notes in `.ran` whether it ran inside a session's tree, and `out/`, which the `rm` would remove,
-must still be there. From the transcript they take only that no call in the skill's shape was
-refused as unreadable, and that an ask says it needs approval. Every refusal the hooks gave is
-printed; a model takes a different path each time, so read those as well as the verdict. Claude
-Code labels every refusal a hook gives `PreToolUse:Bash hook error:`; that is its wording for a
-deny, not the hook failing, and the reason after it is the hook's.
+In every scenario `rm` is refused. Claude Code does not offer auto mode with every model and falls
+back to `default` without saying so, so the `auto` scenario runs with Sonnet and each Claude Code
+run is checked to have been in the mode it asked for.
+
+It prints one line per test, `PASS` or `FAIL`, and a count at the end; in `auto` the classifier's
+choice is reported as `INFO`, since either is allowed. The checks read the project, not the model's
+account: `build.sh` notes in `.ran` whether it ran inside a session's tree, and `out/`, which the
+`rm` would remove, must still be there. Under a failed test it shows the refusals the hooks gave in
+that run and where its transcript is, and the transcripts are kept; `TFS_LIVE_VERBOSE=1` shows them
+for every run. Claude Code labels a hook's refusal `PreToolUse:Bash hook error:`; that is its
+wording for a deny, not the hook failing.
 
 It is not part of the gate: it needs logged-in harnesses, a mount (Linux, root or passwordless
 `sudo`), and calls a model, seven runs in all.
