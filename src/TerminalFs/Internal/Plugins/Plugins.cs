@@ -37,15 +37,15 @@ internal static class Plugins
     {
         return harness switch
         {
-            PluginHarness.Claude => Path.Combine(Base("XDG_DATA_HOME", ".local/share"), "terminalfs", "claude-code"),
+            PluginHarness.Claude => Path.Combine(Base("XDG_DATA_HOME", ".local", "share"), "terminalfs", "claude-code"),
             _ => Path.Combine(Base("XDG_CONFIG_HOME", ".config"), "opencode", "plugins", "terminalfs"),
         };
 
         // A relative XDG directory is to be ignored, as the specification says.
-        string Base(string variable, string fallback) =>
+        string Base(string variable, params string[] fallback) =>
             environment(variable) is { Length: > 0 } set && Path.IsPathFullyQualified(set)
                 ? set
-                : Path.Combine(home, fallback);
+                : Path.Combine([home, .. fallback]);
     }
 
     /// <summary>The files <paramref name="harness"/>'s plugin is made of, by path under its directory.</summary>
