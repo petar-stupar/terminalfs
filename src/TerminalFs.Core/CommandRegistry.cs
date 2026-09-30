@@ -139,7 +139,15 @@ public sealed class CommandRegistry : IDisposable
 
         PrivateDirectory(Path.GetDirectoryName(root)!);
         PrivateDirectory(root);
-        SweepAbandoned(root);
+        SweepAbandoned(Path.GetDirectoryName(root)!, root, quiet: false);
+
+        // Where output went before it moved under the user's cache, readable by everyone. What a
+        // server that is gone left there is cleared once, here; another user's is not ours to
+        // clear, and saying so on every start would be noise.
+        if (options.OutputRoot is null && !OperatingSystem.IsWindows())
+        {
+            SweepAbandoned(Path.Combine(Path.GetTempPath(), "terminalfs"), root, quiet: true);
+        }
 
         return new CommandRegistry(options, root);
     }
@@ -760,16 +768,26 @@ public sealed class CommandRegistry : IDisposable
     /// left by a server that was killed rather than stopped — its own cleanup never ran. Doing
     /// this at startup rather than at shutdown is what makes it happen at all in that case.
     /// </remarks>
-    private static void SweepAbandoned(string root)
+    private static void SweepAbandoned(string parent, string root, bool quiet)
     {
-        string? parent = Path.GetDirectoryName(root);
-
-        if (parent is null || !Directory.Exists(parent))
+        if (!Directory.Exists(parent))
         {
             return;
         }
 
-        foreach (string directory in Directory.EnumerateDirectories(parent))
+        string[] directories;
+
+        try
+        {
+            directories = Directory.GetDirectories(parent);
+        }
+        catch (Exception exception) when (quiet && exception is IOException or UnauthorizedAccessException)
+        {
+            // Somebody else's, and closed to us.
+            return;
+        }
+
+        foreach (string directory in directories)
         {
             string name = Path.GetFileName(directory);
 
@@ -804,7 +822,10 @@ public sealed class CommandRegistry : IDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                Diagnostics.Report($"sweeping {directory}", exception);
+                if (!quiet)
+                {
+                    Diagnostics.Report($"sweeping {directory}", exception);
+                }
             }
         }
     }
