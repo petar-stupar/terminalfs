@@ -39,6 +39,34 @@ commands vanished, a control file whose contents were prepended to the next comm
 `rm -r` that left the process it was meant to stop still running. If a change touches how a file is
 written, read or removed, mount it and try it.
 
+**Some things are only visible from a model.** The hooks read a command out of whatever call an agent
+makes, and a model does not write the calls the unit tests do: it starts one with a blank line or a
+comment, puts `2>&1` on a read, labels its output with `echo`. After any change to the hooks, the
+plugins or the skills, run them for real:
+
+```sh
+tests/live/run.sh              # Claude Code, then opencode; or name one
+```
+
+It builds this branch, installs both plugins from it into a scratch directory, and gives a small
+model the same task in a scratch project: run a failing build through the tree and read its output
+in the same call, run an `rm` a deny rule refuses, list `ctl/`, and, in the default permission mode,
+a command no rule decides. It prints every refusal the hooks gave and fails on the ones that mean
+the hook misread a call in the skill's shape, or on a promise it never saw kept. A model takes a
+different path each time, so read what it prints as well as the verdict. It is not part of the gate:
+it needs logged-in harnesses, a mount (Linux, root or passwordless `sudo`), and calls a model.
+
+Claude Code runs as you are logged in, with the plugin loaded for the session only. opencode v2 runs
+from its own home, so it never touches yours; log in there once, with a key:
+
+```sh
+H=~/.cache/terminalfs-live-opencode
+mkdir -p $H/home $H/config $H/data $H/cache $H/state
+HOME=$H/home XDG_CONFIG_HOME=$H/config XDG_DATA_HOME=$H/data XDG_CACHE_HOME=$H/cache \
+  XDG_STATE_HOME=$H/state opencode auth login opencode --standalone
+TFS_LIVE_OPENCODE=$(command -v opencode) TFS_LIVE_OPENCODE_HOME=$H tests/live/run.sh opencode
+```
+
 ## What belongs where
 
 `src/TerminalFs.Core` knows about commands, processes, output and the rules that refuse them. It
