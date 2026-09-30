@@ -9,6 +9,7 @@ using TerminalFs.Core;
 using TerminalFs.Core.Permissions;
 using TerminalFs.Internal.Hooks;
 using TerminalFs.Internal.Mount;
+using TerminalFs.Internal.Plugins;
 using TerminalFs.Internal.Server;
 using TerminalFs.Internal.Sessions;
 
@@ -27,7 +28,10 @@ internal static class Program
         {
             await Console.Error.WriteLineAsync("terminalfs: " + exception.Message).ConfigureAwait(false);
             await Console.Error.WriteLineAsync(
-                    IsSession(args) ? SessionOptions.Usage : args is ["hook", ..] ? HookUsage : CliOptions.Usage)
+                    IsSession(args) ? SessionOptions.Usage
+                    : args is ["hook", ..] ? HookUsage
+                    : args is ["plugin", ..] ? Plugins.Usage
+                    : CliOptions.Usage)
                 .ConfigureAwait(false);
 
             return 2;
@@ -70,6 +74,11 @@ internal static class Program
         if (args is ["hook", ..])
         {
             return await HookAsync(args[1..]).ConfigureAwait(false);
+        }
+
+        if (args is ["plugin", ..])
+        {
+            return Plugin(args[1..]);
         }
 
         CliOptions options = CliOptions.Parse(args);
@@ -218,6 +227,38 @@ internal static class Program
         }
     }
 
+    /// <summary><c>terminalfs plugin install claude|opencode [--dir &lt;dir&gt;]</c>.</summary>
+    private static int Plugin(string[] args)
+    {
+        if (args is [] or ["--help" or "-h"] or ["install", "--help" or "-h"])
+        {
+            Console.WriteLine(Plugins.Usage);
+
+            return 0;
+        }
+
+        PluginHarness harness = args switch
+        {
+            ["install", "claude", ..] => PluginHarness.Claude,
+            ["install", "opencode", ..] => PluginHarness.Opencode,
+            _ => throw new CliUsageException("plugin: say 'install claude' or 'install opencode'"),
+        };
+
+        string directory = args[2..] switch
+        {
+            [] => Plugins.DefaultDirectory(
+                harness,
+                Environment.GetEnvironmentVariable,
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)),
+            ["--dir", { Length: > 0 } dir] => dir,
+            _ => throw new CliUsageException("plugin install: the only option is --dir <dir>"),
+        };
+
+        Console.WriteLine(Plugins.Install(harness, directory));
+
+        return 0;
+    }
+
     /// <summary>Starts session <paramref name="id"/>, or finds it started, and returns where its tree is.</summary>
     private static async Task<string> StartSessionAsync(Sessions sessions, string id, string workingDirectory)
     {
@@ -260,13 +301,20 @@ internal static class Program
         }
 
         if (args is not (["claude", "session-start" or "session-end" or "pre-tool-use"]
-            or ["opencode", "session-start" or "session-end" or "check"]))
+            or ["opencode", "session-start" or "session-end" or "check" or "skill"]))
         {
             throw new CliUsageException(
-                "hook: say 'claude session-start|session-end|pre-tool-use' or 'opencode session-start|session-end|check'");
+                "hook: say 'claude session-start|session-end|pre-tool-use' or 'opencode session-start|session-end|check|skill'");
         }
 
         string json = await Console.In.ReadToEndAsync().ConfigureAwait(false);
+
+        if (args[1] == "skill")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, string> { ["content"] = PluginSkills.Opencode }));
+
+            return 0;
+        }
         SessionPaths paths = SessionPaths.Default;
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         bool claude = args[0] == "claude";
@@ -393,6 +441,7 @@ internal static class Program
                terminalfs hook opencode session-start
                terminalfs hook opencode session-end
                terminalfs hook opencode check
+               terminalfs hook opencode skill
 
         What the Claude Code and opencode plugins run, with JSON on standard input.
 
@@ -402,6 +451,7 @@ internal static class Program
                           Claude Code permission rules, and refuse any other write into it
           check           the same, for one of opencode's permission checks and the
                           session's opencode rules
+          skill           the opencode skill, for the plugin to add
         """;
 
     /// <param name="options">What to serve and where.</param>

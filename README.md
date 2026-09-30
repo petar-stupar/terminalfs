@@ -61,10 +61,11 @@ own, and both are called `terminalfs`:
 | `/skills/opencode/terminalfs/SKILL.md` | one `execute` script writes `ctl/<name>` and reads `wait` and `stdout` |
 | `/skills/claude-code/terminalfs/SKILL.md` | one Bash call, in a fixed shape: `cat >` a heredoc into `ctl/<name>`, then `cat` `wait` and `stdout` |
 
-Either way a command costs one tool call rather than three. opencode reads skills straight off the
-mount: add `skills/opencode` under the mountpoint to `skills.paths`. Claude Code only finds skills
-under its own configuration directory; the [plugin](#claude-code) brings the skill with it, and
-without the plugin, copy `skills/claude-code/terminalfs/SKILL.md` to
+Either way a command costs one tool call rather than three. The plugins for
+[Claude Code](#claude-code) and [opencode](#opencode) bring their skill with them, taken from the
+binary rather than a mount, since the plugin is what starts the tree. Without a plugin, opencode
+reads skills straight off the mount: add `skills/opencode` under the mountpoint to `skills.paths`.
+Claude Code only finds skills under its own configuration directory, so copy `skills/claude-code/terminalfs/SKILL.md` to
 `$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`, replacing `<mount>` in it if it is still there.
 
 A skill names the mountpoint outright when this server was told one — either because it did the
@@ -224,7 +225,8 @@ it is still being written. Remove it, or pick another name.
 curl -fsSL https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.sh | sh
 ```
 
-Installs to `~/.local/bin`. On Windows, `irm https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.ps1 | iex`.
+Installs to `~/.local/bin`. The plugins for [Claude Code](#claude-code) and [opencode](#opencode)
+come with the binary: `terminalfs plugin install claude|opencode` writes one out. On Windows, `irm https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.ps1 | iex`.
 
 ### From source
 
@@ -281,8 +283,17 @@ yours.
 
 ### Claude Code
 
-The plugin in this repository gives each Claude Code session a tree of its own and holds what the
-session runs through it to the session's own permission rules:
+The plugin gives each Claude Code session a tree of its own and holds what the session runs
+through it to the session's own permission rules. The binary carries the one that goes with it:
+
+```sh
+terminalfs plugin install claude
+```
+
+writes a marketplace holding the plugin to `$XDG_DATA_HOME/terminalfs/claude-code` (`--dir` puts it
+elsewhere) and prints the two commands that add it to Claude Code. After installing a newer
+terminalfs, run it again and then `claude plugin marketplace update terminalfs`. The repository is
+the same marketplace, if you would rather follow `main`:
 
 ```sh
 claude plugin marketplace add petar-stupar/terminalfs
@@ -337,10 +348,18 @@ an agent that follows its instructions inside the rules you wrote for it.
 
 ### opencode
 
-`plugins/opencode` is the same for opencode (v2): a tree for each session, and the session's own
-permission rules applied to what runs through it. Copy the directory to
-`~/.config/opencode/plugins/terminalfs/`, or name it in `plugins` in your opencode configuration.
-It needs `terminalfs` on the `PATH` and whatever sessions need.
+The opencode plugin is the same for opencode (v2): a tree for each session, and the session's own
+permission rules applied to what runs through it.
+
+```sh
+terminalfs plugin install opencode
+```
+
+puts it in `$XDG_CONFIG_HOME/opencode/plugins/terminalfs/`, where opencode finds it when it next
+starts; run it again after installing a newer terminalfs. `--dir` puts it elsewhere, for naming in
+`plugins` in your opencode configuration. The plugin is one script, `plugins/opencode/index.js` in
+this repository, and it asks the binary for its skill, so the skill is always the one written for
+the terminalfs that runs. It needs `terminalfs` on the `PATH` and whatever sessions need.
 
 The tree is started before the session's first prompt and the agent told where it is, and it is
 stopped when the session is deleted or opencode's server stops. The agent gets the opencode skill,

@@ -30,7 +30,8 @@ public sealed class PluginTests
 
     /// <summary>
     /// The plugin's skill is the one the tree serves to Claude Code when nobody has said where the
-    /// tree is: the session's own path arrives from the session-start hook instead.
+    /// tree is: the session's own path arrives from the session-start hook instead. The copy is
+    /// here for the marketplace in the repository; <c>terminalfs plugin install</c> renders its own.
     /// </summary>
     [Fact]
     public void ThePluginsSkillIsTheOneTheTreeServes()
@@ -38,18 +39,6 @@ public sealed class PluginTests
         string shipped = File.ReadAllText(Path.Combine(Plugin, "skills", "terminalfs", "SKILL.md"));
 
         Assert.Equal(TreeText.Skill(SkillHarness.ClaudeCode, mountPath: null), shipped);
-    }
-
-    /// <summary>
-    /// The opencode plugin adds its own copy of the skill, since opencode keeps skills per project
-    /// and a session's tree is somewhere different each time.
-    /// </summary>
-    [Fact]
-    public void TheOpencodePluginsSkillIsTheOneTheTreeServes()
-    {
-        string shipped = File.ReadAllText(Path.Combine(Repository, "plugins", "opencode", "SKILL.md"));
-
-        Assert.Equal(TreeText.Skill(SkillHarness.OpenCode, mountPath: null), shipped);
     }
 
     /// <summary>

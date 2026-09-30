@@ -49,8 +49,17 @@ refuses a tag whose version has no section here.
   one in any shape but the skill's are refused, and a `cd` out of the project in a command is
   asked about as opencode's shell tool would ask. An "always" answer to the prompt is opencode's
   for an edit, and allows every edit in the project. `terminalfs hook opencode
-  session-start|session-end|check` is what it runs.
+  session-start|session-end|check|skill` is what it runs: the skill comes from the binary, so
+  the plugin is `index.js` alone.
 - **`$TERMINALFS_RUNTIME_DIR`** says where session trees live, before `$XDG_RUNTIME_DIR`.
+- **`terminalfs plugin install claude|opencode [--dir <dir>]`: the plugins come with the binary.**
+  A plugin is what starts a session's tree, so it cannot be served from one; the binary carries
+  the plugin written for it instead. `opencode` writes the plugin to
+  `$XDG_CONFIG_HOME/opencode/plugins/terminalfs/`, where opencode finds it. `claude` writes a
+  marketplace laid out as the repository's to `$XDG_DATA_HOME/terminalfs/claude-code` and prints
+  the `claude plugin` commands that add it, since Claude Code installs plugins only from a
+  marketplace. The Claude Code skill in it is rendered from the program rather than copied.
+  Run it again after an upgrade.
 
 ### Changed
 

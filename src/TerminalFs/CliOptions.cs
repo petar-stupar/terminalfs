@@ -286,10 +286,13 @@ internal sealed record CliOptions
                           [--wait-timeout <n>] [--settle <ms>] [--unmount]
                           [--restart-docker-container]
                terminalfs session start|stop|gc ...
+               terminalfs plugin install claude|opencode ...
 
           (no flags)                  serve the tree over 9P and print the address
           session                     a tree per agent session, each on its own port and
                                       mount. See terminalfs session --help
+          plugin install              write out the Claude Code or opencode plugin that goes
+                                      with this binary. See terminalfs plugin --help
           --mount                     serve, then mount it; Linux mounts 9P directly and
                                       macOS goes through a container that re-exports SMB
           --mount-docker              serve, then mount through the container everywhere

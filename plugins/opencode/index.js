@@ -10,13 +10,17 @@
 // write made on its own gets the command's state and output added to its result instead.
 //
 // Everything that decides is in the terminalfs binary, shared with the Claude Code plugin; this
-// file only carries opencode's events to it. terminalfs has to be on the PATH.
+// file only carries opencode's events to it. The skill comes from the binary too, so it is the one
+// written for the terminalfs that runs. terminalfs has to be on the PATH, and
+// `terminalfs plugin install opencode` puts the plugin that goes with it where opencode finds it.
 
 import { spawn } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 
-const skillPath = fileURLToPath(new URL("./SKILL.md", import.meta.url))
+// Where opencode says the skill is from. There is no such file, and it is not called SKILL.md, so
+// opencode does not list this plugin's own files as the skill's.
+const skillPath = fileURLToPath(new URL("./terminalfs.md", import.meta.url))
 
 /** Runs `terminalfs hook opencode <event>` with `input` as JSON, and returns the JSON it prints. */
 function terminalfs(event, input) {
@@ -116,17 +120,21 @@ export default {
       }
     })
 
-    const skill = await readFile(skillPath, "utf8")
-    await ctx.skill.transform((editor) => {
-      editor.add({
-        id: "terminalfs",
-        name: "terminalfs",
-        description:
-          "Run shell commands through this session's terminalfs tree: write a command and read what it did in one execute script.",
-        path: skillPath,
-        content: skill,
+    // Without the binary there is no skill to add; each session's context then says why there is
+    // no tree, rather than opencode failing to start over a plugin.
+    const skill = await terminalfs("skill", {}).then(({ content }) => content, () => undefined)
+    if (skill) {
+      await ctx.skill.transform((editor) => {
+        editor.add({
+          id: "terminalfs",
+          name: "terminalfs",
+          description:
+            "Run shell commands through this session's terminalfs tree: write a command and read what it did in one execute script.",
+          path: skillPath,
+          content: skill,
+        })
       })
-    })
+    }
 
     // Awaited before a prompt is handled, so the tree is there before the agent can use it.
     await ctx.session.hook("prompt", async (event) => {

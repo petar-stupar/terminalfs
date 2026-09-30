@@ -20,4 +20,14 @@
     <InternalsVisibleTo Include="TerminalFs.Tests" />
   </ItemGroup>
 
+  <!-- The agent plugins, carried in the binary so that 'terminalfs plugin install' writes out
+       the ones that go with it. Each is named by where it is installed, under the directory the
+       install is told. The skills are not here: they are rendered from the program. -->
+  <ItemGroup>
+    <EmbeddedResource Include="../../plugins/opencode/index.js" LogicalName="opencode/index.js" />
+    <EmbeddedResource Include="../../.claude-plugin/marketplace.json" LogicalName="claude/.claude-plugin/marketplace.json" />
+    <EmbeddedResource Include="../../plugins/terminalfs/.claude-plugin/plugin.json" LogicalName="claude/plugins/terminalfs/.claude-plugin/plugin.json" />
+    <EmbeddedResource Include="../../plugins/terminalfs/hooks/hooks.json" LogicalName="claude/plugins/terminalfs/hooks/hooks.json" />
+  </ItemGroup>
+
 </Project>
