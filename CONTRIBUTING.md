@@ -53,7 +53,9 @@ model the same task in a scratch project: run a failing build through the tree a
 in the same call, run an `rm` a deny rule refuses, list `ctl/`, and, in the default permission mode,
 a command no rule decides. It prints every refusal the hooks gave and fails on the ones that mean
 the hook misread a call in the skill's shape, or on a promise it never saw kept. A model takes a
-different path each time, so read what it prints as well as the verdict. It is not part of the gate:
+different path each time, so read what it prints as well as the verdict. Claude Code labels every refusal a
+hook gives `PreToolUse:Bash hook error:`; that is its wording for a deny, not the hook failing, and
+the reason after it is the hook's. It is not part of the gate:
 it needs logged-in harnesses, a mount (Linux, root or passwordless `sudo`), and calls a model.
 
 Claude Code runs as you are logged in, with the plugin loaded for the session only. opencode v2 runs

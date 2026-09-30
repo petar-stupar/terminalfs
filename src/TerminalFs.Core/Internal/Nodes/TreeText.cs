@@ -462,7 +462,9 @@ internal static class TreeText
         it with a shell tool, before the write lands, and opencode may ask the user first. A
         refused write names the rule; inside a script it throws only `Unable to write`, and the
         rule is given after the script's result. Don't reword the command to get round it. Write
-        the path out in full, as above.
+        the path out in full, as above. `Unable to write` with no rule after the result means the
+        name has already been used, by this script or an earlier one: write the command again
+        under a fresh name.
 
         ## One name, one command
 

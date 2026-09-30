@@ -54,7 +54,16 @@ def opencode():
 (claude if harness == "claude" else opencode)()
 
 failures = []
-refusals = [(c, r) for c, r, e in calls if "terminalfs" in r and e]
+
+if harness == "claude":
+    # Claude Code marks a hook's refusal as an error, and labels a deny "PreToolUse:Bash hook error".
+    refusals = [(c, r) for c, r, e in calls if "terminalfs" in r and e]
+else:
+    # opencode reports a refused write inside an execute script as "Unable to write", with the
+    # plugin's reason added as a line of its own, and the script itself as completed.
+    refusals = [(c, r) for c, r, e in calls
+                if re.search(r"^terminalfs: .*(denied|needs approval|refused|not in this session|cannot)", r, re.M)
+                or (e and "terminalfs" in r)]
 
 
 def first_line(command):
@@ -66,7 +75,10 @@ def first_line(command):
 
 print(f"{harness}/{scenario}: {len(calls)} shell calls, {len(refusals)} refused by terminalfs")
 for command, result in refusals:
-    print(f"  refused: {first_line(command)[:100]}\n       -> {result.strip()[:220]}")
+    written = re.search(r"/ctl/[A-Za-z0-9_.-]+", command)
+    what = first_line(command) if harness == "claude" else f"{command.split(']')[0]}] {written.group(0) if written else ''}"
+    reason = " / ".join(line.strip() for line in result.strip().splitlines() if line.strip())
+    print(f"  refused: {what[:100]}\n       -> {reason[:240]}")
 
 # A call in the skill's shape is never refused for being unreadable: that is the hook misreading
 # the very call the skill teaches. A refusal of what the command itself does — a deny rule, a path
@@ -76,14 +88,18 @@ for command, result in refusals:
     if SHAPE.match(first_line(command)) and any(phrase in result for phrase in UNREADABLE):
         failures.append(f"a call in the skill's shape was refused as unreadable: {first_line(command)}")
 
-ran = any(not e and re.search(r"^(completed|error)\b", r.strip(), re.M) for c, r, e in calls if "/ctl/" in c)
+# A command's state, as Claude Code's call reads it back from wait, as the opencode plugin adds it
+# to a write's result, or as an execute script hands it back among its own values.
+ran = any(
+    not e and re.search(r'^(completed|error)\b|^terminalfs: \S+ (completed|error)|"(completed|error)"', r.strip(), re.M)
+    for c, r, e in calls if "/ctl/" in c or "ctl/" in c)
 
 if scenario == "run":
     if not ran:
         failures.append("no command was seen running through the tree")
     if not any("rm" in c and "Bash(rm *)" in r for c, r in refusals) and harness == "claude":
         failures.append("the deny rule Bash(rm *) was never seen refusing rm")
-    if harness == "opencode" and not any("rm" in c and "rm *" in r for c, r, e in calls):
+    if harness == "opencode" and not any("rm" in c and "'rm *'" in r for c, r in refusals):
         failures.append("the deny rule rm * was never seen refusing rm")
 elif scenario == "ask":
     if not any("needs approval" in r for c, r in refusals):
