@@ -62,7 +62,7 @@ internal static partial class TreeCalls
 
     private static readonly System.Buffers.SearchValues<char> NotInARead = System.Buffers.SearchValues.Create("><`$&(){}\r\n");
 
-    private static readonly string[] ReadingPrograms = ["cat", "ls", "tail", "head", "wc", "grep", "stat"];
+    private static readonly string[] ReadingPrograms = ["cat", "ls", "tail", "head", "wc", "grep", "stat", "echo"];
 
     /// <summary>The reading programs' options that take the next word as their value.</summary>
     private static readonly Dictionary<string, string[]> OptionsWithValues = new(StringComparer.Ordinal)
@@ -365,6 +365,13 @@ internal static partial class TreeCalls
         if (!IsRead(segment) || Words(HarmlessRedirections().Replace(segment, " ")) is not [var program, .. var arguments])
         {
             return false;
+        }
+
+        // A label between reads — echo "--- last lines ---" — prints its words and nothing else,
+        // since nothing in it can be expanded or redirected.
+        if (program == "echo")
+        {
+            return true;
         }
 
         string[] valued = OptionsWithValues.TryGetValue(program, out string[]? known) ? known : [];

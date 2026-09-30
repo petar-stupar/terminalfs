@@ -385,6 +385,8 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("cp notes.txt {tree}/ctl")]
     [InlineData("cat {tree}/cmd/build/stdout 2>/tmp/x")]
     [InlineData("cat {tree}/cmd/build/stdout 2>&1 > /tmp/x")]
+    [InlineData("echo $(cat /etc/passwd); cat {tree}/cmd/build/stdout")]
+    [InlineData("echo x > /tmp/x; cat {tree}/cmd/build/stdout")]
     [InlineData("ls {tree}/ctl && cp notes.txt {tree}/ctl/x")]
     [InlineData("grep -e error --file=/home/u/.ssh/id_rsa {tree}/cmd/build/stdout")]
     [InlineData("grep -rf patterns {tree}/cmd/build/stdout")]
@@ -419,6 +421,7 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("grep -A 3 -n error {tree}/cmd/build/stdout")]
     [InlineData("cat {tree}/cmd/build/exitcode")]
     [InlineData("cat {tree}/cmd/build/exitcode  # show how it went")]
+    [InlineData("echo \"=== last lines ===\"; tail -5 {tree}/cmd/build/stdout")]
     public void ReadsOfTheTreeAfterTheCommandRideAlong(string read)
     {
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
@@ -475,6 +478,7 @@ public sealed class ClaudeHookTests : IDisposable
     [Theory]
     [InlineData("dotnet build")]
     [InlineData("cat > /tmp/notes <<'CMD'\nhello\nCMD")]
+    [InlineData("echo hello")]
     public void ACallThatDoesNotTouchTheTreesIsLeftAlone(string command) =>
         Assert.Null(Bash(command));
 
