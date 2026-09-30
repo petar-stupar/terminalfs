@@ -377,6 +377,12 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("ls {tree}/cmd; ls")]
     [InlineData("cat {tree}/cmd/build/../../../etc/passwd")]
     [InlineData("echo $(id) > {tree}/cmd/build/kill")]
+    [InlineData("grep -f /etc/passwd {tree}/cmd/build/stdout")]
+    [InlineData("grep -e error --file=/home/u/.ssh/id_rsa {tree}/cmd/build/stdout")]
+    [InlineData("grep -rf patterns {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | cat /etc/passwd")]
+    [InlineData("tail -n 40")]
+    [InlineData("grep \"unclosed {tree}/cmd/build/stdout")]
     public void ReadingAnythingButTheTreeIsNeverAllowed(string command) =>
         Assert.NotEqual("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
 
@@ -385,17 +391,55 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("cat ~/.claude/settings.json")]
     [InlineData("cat /etc/passwd")]
     [InlineData("grep -r password /etc")]
+    [InlineData("cat {tree}/cmd/build/stdout | cat /etc/passwd")]
     public void AReadOfAnythingElseAfterTheCommandIsRefused(string read)
     {
         Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
 
-        Assert.Equal("deny", Bash(Shape(Tree, "ls") + $"; {read}")?.Decision);
+        Assert.Equal("deny", Bash(Shape(Tree, "ls") + $"; {read.Replace("{tree}", Tree, StringComparison.Ordinal)}")?.Decision);
+    }
+
+    /// <summary>
+    /// The skill says to cut long output down in the same call, and the reads that do it — a pipe
+    /// to tail, grep with its options — ride along with the command's approval.
+    /// </summary>
+    [Theory]
+    [InlineData("cat {tree}/cmd/build/stdout | tail -40")]
+    [InlineData("grep -A 3 -n error {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/exitcode")]
+    public void ReadsOfTheTreeAfterTheCommandRideAlong(string read)
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        Assert.Equal("allow", Bash(Shape(Tree, "ls") + $"; {read.Replace("{tree}", Tree, StringComparison.Ordinal)}")?.Decision);
+    }
+
+    /// <summary>A read after the command that reaches another session's tree says so.</summary>
+    [Fact]
+    public void AReadOfAnotherTreeAfterTheCommandSaysWhy()
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        ClaudeDecision? decision = Bash(Shape(Tree, "ls") + $"; cat {paths.MountPath("other")}/cmd/x/stdout");
+
+        Assert.Equal("deny", decision?.Decision);
+        Assert.Contains("another session", decision!.Reason, StringComparison.Ordinal);
     }
 
     [Theory]
     [InlineData("grep -n error {tree}/cmd/build/stdout")]
     [InlineData("head -c 100 {tree}/cmd/build/stderr")]
     [InlineData("wc -l {tree}/cmd/build/stdout {tree}/cmd/build/stderr")]
+    [InlineData("grep -A 3 error {tree}/cmd/build/stdout")]
+    [InlineData("grep -C 3 -n error {tree}/cmd/build/stdout")]
+    [InlineData("grep -m 1 error {tree}/cmd/build/stdout")]
+    [InlineData("grep -e warning -e error {tree}/cmd/build/stdout")]
+    [InlineData("grep -i \"no such file\" {tree}/cmd/build/stderr")]
+    [InlineData("tail -n +10 {tree}/cmd/build/stdout")]
+    [InlineData("stat -c %s {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | tail -40")]
+    [InlineData("cat {tree}/cmd/build/stdout | grep -c error")]
+    [InlineData("cat {tree}/cmd/build/stdout | head -n 5 | wc -l")]
     public void ReadingTheTreeWithOptionsIsAllowed(string command) =>
         Assert.Equal("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
 

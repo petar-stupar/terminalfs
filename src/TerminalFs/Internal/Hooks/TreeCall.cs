@@ -64,6 +64,18 @@ internal static partial class TreeCalls
 
     private static readonly string[] ReadingPrograms = ["cat", "ls", "tail", "head", "wc", "grep", "stat"];
 
+    /// <summary>The reading programs' options that take the next word as their value.</summary>
+    private static readonly Dictionary<string, string[]> OptionsWithValues = new(StringComparer.Ordinal)
+    {
+        ["grep"] = ["-A", "-B", "-C", "-m", "-e", "-d", "-D", "--after-context", "--before-context", "--context", "--max-count", "--regexp"],
+        ["tail"] = ["-n", "-c", "--lines", "--bytes"],
+        ["head"] = ["-n", "-c", "--lines", "--bytes"],
+        ["stat"] = ["-c", "--format", "--printf"],
+    };
+
+    /// <summary>Options with which a reading program reads a file named somewhere else than its files.</summary>
+    private static readonly string[] FileOptions = ["-f", "--file", "--files0-from", "--exclude-from"];
+
     /// <summary>What a <c>Bash</c> call does.</summary>
     /// <param name="command">The command it runs.</param>
     /// <param name="paths">Where sessions live.</param>
@@ -110,7 +122,7 @@ internal static partial class TreeCalls
             }
         }
 
-        return Segments(command).All(segment => ReadsOnly(segment, own) || IsKill(segment, own))
+        return Pipelines(command).All(stages => TreeReads(stages, own) || (stages is [var only] && IsKill(only, own)))
             ? new TreeCall.Harmless()
             : new TreeCall.Mixed();
     }
@@ -210,13 +222,21 @@ internal static partial class TreeCalls
         // the command inside it, and must not carry anything else through with it.
         foreach (string line in lines[(end + 1)..])
         {
-            foreach (string segment in Segments(line))
+            foreach (string read in Paths(line, paths.Root))
             {
-                if (!ReadsOnly(segment, own))
+                if (Check(read, own, paths, write: false) is { } unreadable)
+                {
+                    return unreadable;
+                }
+            }
+
+            foreach (string[] stages in Pipelines(line))
+            {
+                if (!TreeReads(stages, own))
                 {
                     return new TreeCall.Refused(
-                        $"'{segment}' follows the command in the same call. Only reads under {own}/cmd/ "
-                        + "may; run anything else on its own");
+                        $"'{string.Join(" | ", stages)}' follows the command in the same call. Only reads under "
+                        + $"{own}/cmd/ may; run anything else on its own");
                 }
             }
         }
@@ -302,31 +322,70 @@ internal static partial class TreeCalls
         && ReadingPrograms.Contains(segment.Split(' ', '\t')[0], StringComparer.Ordinal);
 
     /// <summary>
-    /// A read of this session's own tree and of nothing else. An allow given for a call has to be
-    /// for what is in the tree: a read of any other file rides through on it otherwise, past every
-    /// rule the agent's harness has for reading files.
+    /// A pipeline that reads this session's own tree and nothing else: a read of the tree, and
+    /// after it only reads, of the tree or of what came down the pipe. An allow given for a call
+    /// has to be for what is in the tree; a read of any other file rides through on it otherwise,
+    /// past every rule the agent's harness has for reading files.
+    /// </summary>
+    private static bool TreeReads(string[] stages, string own) =>
+        stages.Length > 0
+        && ReadsOnly(stages[0], own, piped: false)
+        && stages[1..].All(stage => ReadsOnly(stage, own, piped: true));
+
+    /// <summary>
+    /// One reading program whose every file is in <paramref name="own"/>.
     /// </summary>
     /// <remarks>
-    /// Every argument has to be a path under <paramref name="own"/>, bar options, a number an option
-    /// takes (<c>tail -n 40</c>), and <c>grep</c>'s pattern. A word that still holds a quote after
-    /// splitting on whitespace is a quoted phrase this cannot take apart, and makes it not a read.
-    /// A read naming no path at all reads the working directory, which is not the tree.
+    /// Options are passed over, and so are the values of the ones that take one (<c>tail -n 40</c>,
+    /// <c>grep -A 3</c>) and <c>grep</c>'s pattern. An option that reads a file of its own —
+    /// <c>grep -f</c>, <c>--file=</c>, <c>wc --files0-from=</c> — or names a path is never a read of
+    /// the tree. Everything else is a file, and has to be in the tree. With no file at all a
+    /// program reads its standard input, which is the tree only when <paramref name="piped"/> says
+    /// a read of it comes down the pipe; otherwise it is the working directory, or the terminal.
     /// </remarks>
-    private static bool ReadsOnly(string segment, string own)
+    private static bool ReadsOnly(string segment, string own, bool piped)
     {
-        if (!IsRead(segment))
+        if (!IsRead(segment) || Words(segment) is not [var program, .. var arguments])
         {
             return false;
         }
 
-        string[] words = segment.Split([' ', '	'], StringSplitOptions.RemoveEmptyEntries);
-        bool pattern = words[0] == "grep";
-        int read = 0;
+        string[] valued = OptionsWithValues.TryGetValue(program, out string[]? known) ? known : [];
+        bool pattern = program == "grep";
+        bool options = true;
+        int files = 0;
 
-        foreach (string word in words[1..])
+        for (int at = 0; at < arguments.Count; at++)
         {
-            if (word.StartsWith('-') || (word.All(char.IsAsciiDigit) && !pattern))
+            string word = arguments[at];
+
+            if (options && word == "--")
             {
+                options = false;
+                continue;
+            }
+
+            if (options && word.Length > 1 && word[0] == '-')
+            {
+                string name = word.Split('=')[0];
+
+                if (word.Contains('/', StringComparison.Ordinal)
+                    || FileOptions.Contains(name, StringComparer.Ordinal)
+                    || (program == "grep" && !word.StartsWith("--", StringComparison.Ordinal) && word.AsSpan(1).Contains('f')))
+                {
+                    return false;
+                }
+
+                if (name is "-e" or "--regexp")
+                {
+                    pattern = false;
+                }
+
+                if (valued.Contains(name, StringComparer.Ordinal) && !word.Contains('=', StringComparison.Ordinal))
+                {
+                    at++;
+                }
+
                 continue;
             }
 
@@ -336,27 +395,88 @@ internal static partial class TreeCalls
                 continue;
             }
 
-            string path = Unquoted(word);
-
-            if (path.Contains('"', StringComparison.Ordinal) || path.Contains('\\', StringComparison.Ordinal)
-                || path.Contains('\'', StringComparison.Ordinal) || Opaque(path)
-                || HasDotSegment(path) || !Under(Normalised(path), own))
+            if (Opaque(word) || HasDotSegment(word) || !Under(Normalised(word), own))
             {
                 return false;
             }
 
-            read++;
+            files++;
         }
 
-        return read > 0;
+        return files > 0 || piped;
     }
+
+    /// <summary>
+    /// The words of <paramref name="segment"/>, quotes taken off; null when it holds anything this
+    /// cannot take apart as a shell would: a backslash, or a quote that is never closed.
+    /// </summary>
+    private static List<string>? Words(string segment)
+    {
+        var words = new List<string>();
+        var current = new System.Text.StringBuilder();
+        bool inWord = false;
+        char quote = '\0';
+
+        foreach (char character in segment)
+        {
+            if (quote != '\0')
+            {
+                if (character == quote)
+                {
+                    quote = '\0';
+                }
+                else
+                {
+                    current.Append(character);
+                }
+            }
+            else if (character is '\'' or '"')
+            {
+                quote = character;
+                inWord = true;
+            }
+            else if (character == '\\')
+            {
+                return null;
+            }
+            else if (char.IsWhiteSpace(character))
+            {
+                if (inWord)
+                {
+                    words.Add(current.ToString());
+                    current.Clear();
+                    inWord = false;
+                }
+            }
+            else
+            {
+                current.Append(character);
+                inWord = true;
+            }
+        }
+
+        if (quote != '\0')
+        {
+            return null;
+        }
+
+        if (inWord)
+        {
+            words.Add(current.ToString());
+        }
+
+        return words;
+    }
+
+    /// <summary>The commands of <paramref name="command"/>, each as the stages of its pipeline.</summary>
+    private static IEnumerable<string[]> Pipelines(string command) =>
+        Sequences().Split(command)
+            .Where(pipeline => pipeline.Trim().Length > 0)
+            .Select(pipeline => Pipes().Split(pipeline).Select(stage => stage.Trim()).ToArray());
 
     /// <summary><c>echo x &gt; &lt;tree&gt;/cmd/&lt;name&gt;/kill</c>, which ends a command.</summary>
     private static bool IsKill(string segment, string own) =>
         Kill().Match(segment) is { Success: true } kill && IsKillPath(Unquoted(kill.Groups["path"].Value), own);
-
-    private static IEnumerable<string> Segments(string command) =>
-        Separators().Split(command).Select(segment => segment.Trim()).Where(segment => segment.Length > 0);
 
     /// <summary>Every path in <paramref name="command"/> that starts with <paramref name="root"/>.</summary>
     private static IEnumerable<string> Paths(string command, string root)
@@ -406,6 +526,9 @@ internal static partial class TreeCalls
     [GeneratedRegex("""^echo\s+[^\s$`"'\\]+\s*>\s*(?<path>"[^"]*"|'[^']*'|\S+)$""")]
     private static partial Regex Kill();
 
-    [GeneratedRegex(@"&&|\|\||\|&|;|\||&|\n")]
-    private static partial Regex Separators();
+    [GeneratedRegex(@"&&|\|\||;|\n|(?<!\|)&")]
+    private static partial Regex Sequences();
+
+    [GeneratedRegex(@"\|&|\|")]
+    private static partial Regex Pipes();
 }
