@@ -48,13 +48,29 @@ files. An agent with filesystem tools needs no new tool to use any of it.
 /cmd/<name>/stderr      the same for standard error
 /cmd/<name>/wait        reading this blocks until it stops
 /cmd/<name>/kill        write anything here to end it
-/skills/terminalfs/SKILL.md   an agent skill for using this
+/skills/<harness>/terminalfs/SKILL.md   an agent skill for using this
 ```
 
-`SKILL.md` names the mountpoint outright when this server was told one — either because it did
-the mounting, or because `--path` said where you would. Otherwise it writes `<mount>` for you to
-replace, because a path nobody stated would be a guess, and a skill naming a directory that is
-not there is worse than one that asks to be filled in.
+### Skills
+
+The cheapest way to run a command depends on the tools a harness has, so each gets a skill of its
+own, and both are called `terminalfs`:
+
+| Skill | How a command runs |
+| --- | --- |
+| `/skills/opencode/terminalfs/SKILL.md` | one `execute` script writes `ctl/<name>` and reads `wait` and `stdout` |
+| `/skills/claude-code/terminalfs/SKILL.md` | one Bash call, in a fixed shape: `cat >` a heredoc into `ctl/<name>`, then `cat` `wait` and `stdout` |
+
+Either way a command costs one tool call rather than three. opencode reads skills straight off the
+mount: add `<mountpoint>/skills/opencode` to `skills.paths`. Claude Code only finds skills under its
+own configuration directory, so copy `skills/claude-code/terminalfs/SKILL.md` to
+`$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`.
+
+A skill names the mountpoint outright when this server was told one — either because it did the
+mounting, or because `--path` said where you would. Otherwise it writes `<mount>` and says where the
+real one comes from, because a path nobody stated would be a guess, and a skill naming a directory
+that is not there is worse than one that asks to be filled in. The Claude Code skill is a copy that
+outlives the tree it came from, so it gives way to a mount the session context names.
 
 Pages are [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf):
 markdown with YAML frontmatter and an `index.md` at every level.

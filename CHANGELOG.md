@@ -20,6 +20,24 @@ refuses a tag whose version has no section here.
   that old. Linux only for now: the macOS bridge serves one tree at a time. Sessions need the
   settings file, `setsid`, and root or `sudo` for `mount` and `umount`.
 
+### Changed
+
+- **A skill per harness: `/skills/opencode/terminalfs/SKILL.md` and
+  `/skills/claude-code/terminalfs/SKILL.md`.** The cheapest way to run a command depends on the
+  tools a harness has, and one skill describing every way was longer and followed worse. opencode's
+  writes the command and reads `wait` and `stdout` in one `execute` script; Claude Code's does it in
+  one Bash call of a fixed shape — `cat > <mount>/ctl/<name> <<'CMD'`, the command, `CMD`, then `cat`
+  of `wait` and `stdout` — which a permission check can read the command out of. Both say to read
+  `wait` before `stdout`, and not to spend a call removing command directories. Point opencode's
+  `skills.paths` at `<mountpoint>/skills/opencode`; copy the Claude Code one into
+  `$CLAUDE_CONFIG_DIR/skills/terminalfs/`. When the mountpoint is not known, each says where to find
+  it, and the Claude Code one gives way to a mount the session context names.
+
+### Removed
+
+- **`/skills/terminalfs/` is gone.** Anything copying `/skills/terminalfs/SKILL.md` needs to copy
+  the skill for its harness instead.
+
 ### Fixed
 
 - **`--listen tcp://127.0.0.1:0 --mount` mounts the port the server was given.** It used to mount
