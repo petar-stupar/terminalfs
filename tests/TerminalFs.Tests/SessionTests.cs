@@ -398,7 +398,8 @@ public sealed class SessionTests : IDisposable
 
         // The outer shell becomes a sleep that never waits for anything, so the server under it
         // is never reaped once it dies.
-        Start("/bin/sh", "-c",
+        string token = SessionRecord.NewToken();
+        Carrying(token, "/bin/sh", "-c",
             $"setsid /bin/sh -c 'sleep 300 & echo $! > {child}; echo $$ > {server}; wait' & exec sleep 300");
 
         int pid = await ReadPidAsync(server);
@@ -410,13 +411,43 @@ public sealed class SessionTests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => ProcessTable.Find(pid) is { Zombie: true }, TimeSpan.FromSeconds(5)));
 
         Directory.CreateDirectory(paths.MountPath("zombie"));
-        new SessionRecord("zombie", pid, startedAt, 40777, paths.MountPath("zombie"), root, DateTimeOffset.UtcNow)
+        new SessionRecord("zombie", pid, startedAt, 40777, paths.MountPath("zombie"), root, DateTimeOffset.UtcNow, token)
             .Write(paths.RecordPath("zombie"));
 
         Assert.Equal(1, (await sessions.CollectAsync(null, Token)).Stopped);
 
         Assert.DoesNotContain(reports, line => line.Contains("killing it", StringComparison.Ordinal));
         Assert.True(SpinWait.SpinUntil(() => !IsRunning(command), TimeSpan.FromSeconds(5)));
+    }
+
+    /// <summary>
+    /// A process group outlives its leader, and a program that forks twice leaves one led by a
+    /// pid that is free again. Once a record's pid names such a group, nothing in it is the
+    /// server's unless it carries the server's token, and nothing else in it is touched.
+    /// </summary>
+    [Fact]
+    public async Task AGroupByTheServersNumberIsNotKilledWithoutItsToken()
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux() && HasSetsid, "process groups are read from /proc");
+
+        string leader = Path.Combine(scratch, "leader.pid");
+        string child = Path.Combine(scratch, "child.pid");
+
+        // The leader starts a sleep in its new group and exits, as a daemonising program does.
+        Process outer = Start("setsid", "/bin/sh", "-c", $"echo $$ > {leader}; sleep 300 & echo $! > {child}");
+        int pid = await ReadPidAsync(leader);
+        int orphan = await ReadPidAsync(child);
+        Assert.True(outer.WaitForExit(TimeSpan.FromSeconds(5)));
+        Assert.True(SpinWait.SpinUntil(() => ProcessTable.Find(pid) is null, TimeSpan.FromSeconds(5)));
+
+        Directory.CreateDirectory(paths.MountPath("orphaned"));
+        new SessionRecord("orphaned", pid, DateTimeOffset.UtcNow.AddMinutes(-1), 40778, paths.MountPath("orphaned"), root, DateTimeOffset.UtcNow, SessionRecord.NewToken())
+            .Write(paths.RecordPath("orphaned"));
+
+        Assert.Equal(1, (await sessions.CollectAsync(null, Token)).Stopped);
+
+        Assert.True(IsRunning(orphan));
+        Process.GetProcessById(orphan).Kill();
     }
 
     /// <summary>
@@ -628,7 +659,11 @@ public sealed class SessionTests : IDisposable
 
     private SessionRecord Running(string id, DateTimeOffset? created, params string[] command)
     {
-        Process server = command.Length == 0 ? Start("sleep", "300") : Start(command[0], command[1..]);
+        // Carried by the server and whatever it starts, as a real server's commands carry it.
+        string token = SessionRecord.NewToken();
+        Process server = command.Length == 0
+            ? Carrying(token, "sleep", "300")
+            : Carrying(token, command[0], command[1..]);
         Directory.CreateDirectory(paths.MountPath(id));
 
         var record = new SessionRecord(
@@ -638,7 +673,8 @@ public sealed class SessionTests : IDisposable
             Port: 40000 + started.Count,
             paths.MountPath(id),
             root,
-            created ?? DateTimeOffset.UtcNow);
+            created ?? DateTimeOffset.UtcNow,
+            token);
 
         record.Write(paths.RecordPath(id));
         host.Mounted[record.MountPath] = record.Port;
@@ -649,9 +685,17 @@ public sealed class SessionTests : IDisposable
     private SessionRecord Record(string id) =>
         SessionRecord.Read(paths.RecordPath(id)) ?? throw new InvalidOperationException($"no record for {id}");
 
-    private Process Start(string file, params string[] arguments)
+    private Process Start(string file, params string[] arguments) => Carrying(null, file, arguments);
+
+    /// <summary>Starts a process with a session token in its environment, as a server has.</summary>
+    private Process Carrying(string? token, string file, params string[] arguments)
     {
         var start = new ProcessStartInfo(file) { UseShellExecute = false };
+
+        if (token is not null)
+        {
+            start.Environment[SessionRecord.TokenVariable] = token;
+        }
 
         foreach (string argument in arguments)
         {

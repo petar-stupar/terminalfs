@@ -23,6 +23,26 @@ public static class Diagnostics
         sink?.Invoke($"terminalfs: {doing}: {exception.GetType().Name}: {exception.Message}");
 
     /// <summary>
+    /// A timer's callback that reports what it throws rather than letting it go. An exception on a
+    /// timer's thread ends the process, and one command's full disk is not a reason to take every
+    /// other command down with it.
+    /// </summary>
+    internal static TimerCallback Guarded(string doing, Action action) =>
+        _ =>
+        {
+            try
+            {
+                action();
+            }
+#pragma warning disable CA1031 // Reported and survived: nobody is waiting on a timer to hear it.
+            catch (Exception exception)
+#pragma warning restore CA1031
+            {
+                Report(doing, exception);
+            }
+        };
+
+    /// <summary>
     /// Reports something noticed rather than caught. Public because the server above this
     /// library has the same kind of failure to report — a clunk cannot carry an error back to
     /// whoever wrote the bytes — and should report it to the same place.

@@ -285,7 +285,7 @@ internal sealed class OpencodeHook(SessionPaths paths, Func<string, string?> env
             "deny" => new OpencodeDecision(
                 "deny",
                 $"terminalfs: '{shown}' is denied by the {verdict.Rule!.Action} rule '{verdict.Rule.Resource}': {verdict.Rule.Effect}"),
-            "ask" => new OpencodeDecision("ask", $"Run through terminalfs: {shown}"),
+            "ask" => new OpencodeDecision("ask", $"terminalfs: no permission rule allows or denies '{shown}', so it needs approval to run through this session's tree"),
             _ => new OpencodeDecision("allow"),
         };
     }

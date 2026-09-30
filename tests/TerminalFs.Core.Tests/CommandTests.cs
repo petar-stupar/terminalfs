@@ -10,6 +10,50 @@ public sealed class CommandTests : IDisposable
 
     public void Dispose() => workspace.Dispose();
 
+    /// <summary>
+    /// What a command prints can be a secret it read, so no other user can read its output.
+    /// </summary>
+    [Fact]
+    public async Task OutputIsReadableByThisUserAlone()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Unix file modes");
+            return;
+        }
+
+        Command command = workspace.Run("t1", "echo secret");
+        await Workspace.Finished(command);
+
+        const UnixFileMode Group = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute;
+        const UnixFileMode Other = UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+
+        foreach (string path in (string[])[command.Stdout.Path, command.Stderr.Path, Path.GetDirectoryName(command.Stdout.Path)!])
+        {
+            Assert.Equal((UnixFileMode)0, File.GetUnixFileMode(path) & (Group | Other));
+        }
+    }
+
+    /// <summary>
+    /// Output goes under this user's own cache directory, not the temporary directory every user
+    /// shares.
+    /// </summary>
+    [Fact]
+    public void OutputGoesUnderThisUsersCache()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "the temporary directory is the user's own there");
+
+        string cache = Path.Combine(workspace.Root, "cache");
+
+        Assert.Equal(
+            Path.Combine(cache, "terminalfs-output"),
+            CommandRegistry.DefaultOutputParent(name => name == "XDG_CACHE_HOME" ? cache : null));
+        Assert.StartsWith(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            CommandRegistry.DefaultOutputParent(_ => null),
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task EchoCompletesWithItsOutputAndExitCodeZero()
     {

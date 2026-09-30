@@ -355,6 +355,10 @@ public sealed class ClaudeHookTests : IDisposable
     [InlineData("ls {tree}/cmd/build")]
     [InlineData("echo x > {tree}/cmd/build/kill")]
     [InlineData("cat {tree}/skills/claude-code/terminalfs/SKILL.md")]
+    [InlineData("ls -la {tree}/ctl/")]
+    [InlineData("ls {tree}")]
+    [InlineData("ls -la {tree}/ctl/ 2>&1")]
+    [InlineData("cat {tree}/cmd/build/stderr 2>/dev/null | tail -5")]
     public void ReadingTheTreeOrEndingACommandIsAllowed(string command) =>
         Assert.Equal("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
 
@@ -366,9 +370,152 @@ public sealed class ClaudeHookTests : IDisposable
     public void ReadingTheTreeAlongsideSomethingElseIsLeftToTheHarness() =>
         Assert.Null(Bash($"cat {Tree}/cmd/build/stdout && rm -rf build"));
 
+    /// <summary>
+    /// A read of any other file in the same call is not the tree's to approve: an allow would carry
+    /// it past every rule Claude Code has for reading files.
+    /// </summary>
+    [Theory]
+    [InlineData("cat {tree}/cmd/build/wait; cat /etc/passwd")]
+    [InlineData("cat {tree}/cmd/build/wait; grep -r secret /home")]
+    [InlineData("cat {tree}/cmd/build/stdout notes.txt")]
+    [InlineData("ls {tree}/cmd; ls")]
+    [InlineData("cat {tree}/cmd/build/../../../etc/passwd")]
+    [InlineData("echo $(id) > {tree}/cmd/build/kill")]
+    [InlineData("grep -f /etc/passwd {tree}/cmd/build/stdout")]
+    [InlineData("cp notes.txt {tree}/ctl")]
+    [InlineData("cat {tree}/cmd/build/stdout 2>/tmp/x")]
+    [InlineData("cat {tree}/cmd/build/stdout 2>&1 > /tmp/x")]
+    [InlineData("echo $(cat /etc/passwd); cat {tree}/cmd/build/stdout")]
+    [InlineData("echo x > /tmp/x; cat {tree}/cmd/build/stdout")]
+    [InlineData("echo \"$(cat /etc/passwd)\"; cat {tree}/cmd/build/stdout")]
+    [InlineData("echo \"`id`\"; cat {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | grep \"x\" | rm -rf /tmp/y")]
+    [InlineData("cat {tree}/cmd/build/stdout & rm -rf /tmp/y")]
+    [InlineData("ls {tree}/ctl && cp notes.txt {tree}/ctl/x")]
+    [InlineData("grep -e error --file=/home/u/.ssh/id_rsa {tree}/cmd/build/stdout")]
+    [InlineData("grep -rf patterns {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | wc --f=list")]
+    [InlineData("grep --fil=patterns {tree}/cmd/build/stdout")]
+    [InlineData("grep -e x --exclude-f=names {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | cat /etc/passwd")]
+    [InlineData("tail -n 40")]
+    [InlineData("grep \"unclosed {tree}/cmd/build/stdout")]
+    public void ReadingAnythingButTheTreeIsNeverAllowed(string command) =>
+        Assert.NotEqual("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
+
+    /// <summary>After the command, only reads of the tree ride along with its approval.</summary>
+    [Theory]
+    [InlineData("cat ~/.claude/settings.json")]
+    [InlineData("cat /etc/passwd")]
+    [InlineData("grep -r password /etc")]
+    [InlineData("cat {tree}/cmd/build/stdout | cat /etc/passwd")]
+    [InlineData("M={tree}; cat $M/cmd/build/stdout")]
+    [InlineData("cp notes.txt {tree}/ctl/again")]
+    public void AReadOfAnythingElseAfterTheCommandIsRefused(string read)
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        Assert.Equal("deny", Bash(Shape(Tree, "ls") + $"; {read.Replace("{tree}", Tree, StringComparison.Ordinal)}")?.Decision);
+    }
+
+    /// <summary>
+    /// The skill says to cut long output down in the same call, and the reads that do it — a pipe
+    /// to tail, grep with its options — ride along with the command's approval.
+    /// </summary>
+    [Theory]
+    [InlineData("cat {tree}/cmd/build/stdout | tail -40")]
+    [InlineData("grep -A 3 -n error {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/exitcode")]
+    [InlineData("cat {tree}/cmd/build/exitcode  # show how it went")]
+    [InlineData("echo \"=== last lines ===\"; tail -5 {tree}/cmd/build/stdout")]
+    [InlineData("ls -la {tree}/ctl/")]
+    [InlineData("ls {tree}")]
+    [InlineData("grep error {tree}/cmd/build/stdout || echo \"(no errors found)\"")]
+    [InlineData("cat {tree}/cmd/build/stdout | grep -E \"error | Error | ERROR\"")]
+    [InlineData("echo 'a; b && c'; tail -3 {tree}/cmd/build/stdout")]
+    public void ReadsOfTheTreeAfterTheCommandRideAlong(string read)
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        Assert.Equal("allow", Bash(Shape(Tree, "ls") + $"; {read.Replace("{tree}", Tree, StringComparison.Ordinal)}")?.Decision);
+    }
+
+    /// <summary>
+    /// A model writing the call over several lines often begins it with a blank line or two; the
+    /// call is still the skill's shape. Found by running Claude Code with the plugin.
+    /// </summary>
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\n\n  ")]
+    [InlineData("\r\n")]
+    [InlineData("# Step 1: build it\n")]
+    [InlineData("\n# Step 1\n\n")]
+    public void TheSkillsShapeAfterABlankLineIsStillRead(string before)
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(make)"] } }""");
+
+        Assert.Equal("allow", Bash(before + Shape(Tree, "make") + "\n")?.Decision);
+    }
+
+    /// <summary>
+    /// A command that only reads this session's tree may name it: a model told to run everything
+    /// through the tree lists ctl/ that way. One that writes into it may not.
+    /// </summary>
+    [Fact]
+    public void ACommandThatOnlyReadsItsOwnTreeMayNameIt()
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        Assert.Equal("allow", Bash(Shape(Tree, $"ls -la {Tree}/ctl/"))?.Decision);
+        Assert.Equal("deny", Bash(Shape(Tree, $"ls {Tree}/ctl > {Tree}/ctl/x"))?.Decision);
+    }
+
+    /// <summary>
+    /// A model that takes the tree for the project runs a project file from inside it. That is
+    /// refused, saying where commands run, not that the call could not be read.
+    /// </summary>
+    [Fact]
+    public void ACommandNamingAFileInsideTheTreeIsToldWhereCommandsRun()
+    {
+        ClaudeDecision? decision = Bash(Shape(Tree, $"sh {Tree}/build.sh"));
+
+        Assert.Equal("deny", decision?.Decision);
+        Assert.Contains("runs in the project's directory", decision!.Reason, StringComparison.Ordinal);
+    }
+
+    /// <summary>A read after the command that reaches another session's tree says so.</summary>
+    [Fact]
+    public void AReadOfAnotherTreeAfterTheCommandSaysWhy()
+    {
+        Settings(Project, """{ "permissions": { "allow": ["Bash(ls *)"] } }""");
+
+        ClaudeDecision? decision = Bash(Shape(Tree, "ls") + $"; cat {paths.MountPath("other")}/cmd/x/stdout");
+
+        Assert.Equal("deny", decision?.Decision);
+        Assert.Contains("another session", decision!.Reason, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("grep -n error {tree}/cmd/build/stdout")]
+    [InlineData("head -c 100 {tree}/cmd/build/stderr")]
+    [InlineData("wc -l {tree}/cmd/build/stdout {tree}/cmd/build/stderr")]
+    [InlineData("grep -A 3 error {tree}/cmd/build/stdout")]
+    [InlineData("grep -C 3 -n error {tree}/cmd/build/stdout")]
+    [InlineData("grep -m 1 error {tree}/cmd/build/stdout")]
+    [InlineData("grep -e warning -e error {tree}/cmd/build/stdout")]
+    [InlineData("grep -i \"no such file\" {tree}/cmd/build/stderr")]
+    [InlineData("tail -n +10 {tree}/cmd/build/stdout")]
+    [InlineData("stat -c %s {tree}/cmd/build/stdout")]
+    [InlineData("cat {tree}/cmd/build/stdout | tail -40")]
+    [InlineData("cat {tree}/cmd/build/stdout | grep -c error")]
+    [InlineData("cat {tree}/cmd/build/stdout | head -n 5 | wc -l")]
+    public void ReadingTheTreeWithOptionsIsAllowed(string command) =>
+        Assert.Equal("allow", Bash(command.Replace("{tree}", Tree, StringComparison.Ordinal))?.Decision);
+
     [Theory]
     [InlineData("dotnet build")]
     [InlineData("cat > /tmp/notes <<'CMD'\nhello\nCMD")]
+    [InlineData("echo hello")]
     public void ACallThatDoesNotTouchTheTreesIsLeftAlone(string command) =>
         Assert.Null(Bash(command));
 

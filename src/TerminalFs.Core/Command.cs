@@ -62,10 +62,21 @@ public sealed class Command
         CreatedAt = time.GetUtcNow();
         changedAt = CreatedAt;
 
-        System.IO.Directory.CreateDirectory(directory);
+        CommandRegistry.PrivateDirectory(directory);
 
         Stdout = new OutputFile(Path.Combine(directory, "stdout"), CreatedAt);
-        Stderr = new OutputFile(Path.Combine(directory, "stderr"), CreatedAt);
+
+        try
+        {
+            Stderr = new OutputFile(Path.Combine(directory, "stderr"), CreatedAt);
+        }
+        catch
+        {
+            // Out of file handles or disk, the caller gives the name back; the handle already
+            // open on stdout would otherwise stay open until a finalizer got to it.
+            Stdout.Dispose();
+            throw;
+        }
     }
 
     /// <summary>The name the caller gave it.</summary>
@@ -508,7 +519,7 @@ public sealed class Command
                 return;
             }
 
-            timer = time.CreateTimer(_ => onExpire(this), null, keep, Timeout.InfiniteTimeSpan);
+            timer = time.CreateTimer(Diagnostics.Guarded($"removing /cmd/{Id}", () => onExpire(this)), null, keep, Timeout.InfiniteTimeSpan);
         }
     }
 

@@ -52,6 +52,65 @@ internal static class ProcessTable
     }
 
     /// <summary>
+    /// The processes in group <paramref name="group"/> whose environment has
+    /// <paramref name="variable"/> set to <paramref name="value"/>. Only Linux says, through
+    /// <c>/proc</c>; elsewhere there are none. A process whose environment this user cannot read
+    /// — one run through <c>sudo</c> — is not among them, and could not be signalled anyway.
+    /// </summary>
+    internal static List<int> GroupMembersCarrying(int group, string variable, string value)
+    {
+        var members = new List<int>();
+
+        if (!OperatingSystem.IsLinux() || group <= 1)
+        {
+            return members;
+        }
+
+        byte[] wanted = System.Text.Encoding.UTF8.GetBytes(variable + "=" + value);
+
+        foreach (string directory in Directory.EnumerateDirectories("/proc"))
+        {
+            if (!int.TryParse(Path.GetFileName(directory), System.Globalization.CultureInfo.InvariantCulture, out int pid)
+                || pid <= 1)
+            {
+                continue;
+            }
+
+            try
+            {
+                // The group is the fifth field, the third after the command name, which is in
+                // parentheses and may contain spaces and parentheses itself.
+                string stat = File.ReadAllText($"/proc/{pid}/stat");
+                string[] fields = stat[(stat.LastIndexOf(')') + 2)..].Split(' ');
+
+                if (fields.Length < 3
+                    || !int.TryParse(fields[2], System.Globalization.CultureInfo.InvariantCulture, out int pgid)
+                    || pgid != group)
+                {
+                    continue;
+                }
+
+                byte[] environment = File.ReadAllBytes($"/proc/{pid}/environ");
+
+                foreach (Range entry in environment.AsSpan().Split((byte)0))
+                {
+                    if (environment.AsSpan()[entry].SequenceEqual(wanted))
+                    {
+                        members.Add(pid);
+                        break;
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Gone since the listing, or not ours to read.
+            }
+        }
+
+        return members;
+    }
+
+    /// <summary>
     /// Whether <paramref name="pid"/> is a zombie. Only Linux says, through <c>/proc</c>; where it
     /// does not, a process is taken at its word, which is only wrong under a parent that never
     /// reaps.

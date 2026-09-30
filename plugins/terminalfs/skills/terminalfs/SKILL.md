@@ -15,6 +15,8 @@ nothing does, ask rather than guess.
 
 Writing a command to `<mount>/ctl/<name>` runs it; what it did appears under
 `<mount>/cmd/<name>/` as ordinary files.
+The command runs in the project's directory, as it would in a shell there; the tree
+holds only what terminalfs serves, so name the project's files as you would there.
 
 ## Run a command — in one Bash call
 
@@ -34,13 +36,15 @@ Keep to the shape — `cat >` into `ctl/<name>`, the command in a heredoc quoted
 `'CMD'`, then reads under `cmd/<name>/` — rather than `echo … >` or the Write tool. It is
 the shape a permission check can read the command out of: the terminalfs plugin checks it
 against your permission rules as if you had run it with Bash, and refuses a write into
-the tree in any other shape, or anything but reads after it in the same call. The command
-can be several lines, but none of them can be just `CMD`. Write the path out in full each
-time, not through a variable or after a `cd`: the check cannot read a command written
-to a path it cannot see, and refuses the ones it notices.
+the tree in any other shape, or anything after it in the same call but reads of this
+tree. The command can be several lines, but none of them can be just `CMD`. Write the
+path out in full each time, not through a variable or after a `cd`: the check cannot read
+a command written to a path it cannot see, and refuses the ones it notices.
 
 A refusal says why. `denied by` names the rule and the settings file it is in; don't
-reword the command to get round it.
+reword the command to get round it. `needs approval` means no rule decides it and the
+person was asked: refused, it did not run. A refusal of the call itself comes back as the
+call's error and leaves nothing under `cmd/`, so there is no `reason` file to read.
 
 Read `wait` **before** `stdout`. `wait` blocks until the command stops and prints
 `completed`, `error`, or — after about 25 seconds — `running`; `stdout` is a file that

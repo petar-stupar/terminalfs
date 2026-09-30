@@ -468,7 +468,7 @@ public sealed class RenderTests : IDisposable
     {
         // A command that cannot finish until it is told to: one that finished on its own could
         // do so before the revision was first read, and on a fast machine an echo did.
-        Command command = workspace.Run("t1", "sleep 300");
+        Command command = workspace.Run("t1", Workspace.Sleep(300));
 
         var commands = (TerminalDirectory)Registry.Root.Find("cmd")!;
         var directory = (TerminalDirectory)commands.Find("t1")!;

@@ -15,6 +15,7 @@
 // `terminalfs plugin install opencode` puts the plugin that goes with it where opencode finds it.
 
 import { spawn } from "node:child_process"
+import { createReadStream } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 
@@ -46,6 +47,30 @@ function terminalfs(event, input) {
 }
 
 
+/** The most of a command's output a write's result carries: the end of it, which is where a build says how it went. */
+const shown = 64 * 1024
+
+/** The last `limit` bytes of `path`, and whether there was more before them; undefined if it cannot be read. */
+async function tail(path, limit) {
+  try {
+    let kept = Buffer.alloc(0)
+    let cut = false
+    for await (const chunk of createReadStream(path)) {
+      kept = Buffer.concat([kept, chunk])
+      if (kept.length > limit) {
+        kept = kept.subarray(kept.length - limit)
+        cut = true
+      }
+    }
+    // A cut can land inside a character; its continuation bytes would decode as U+FFFD.
+    let start = 0
+    while (cut && start < 3 && start < kept.length && (kept[start] & 0xc0) === 0x80) start++
+    return { text: kept.subarray(start).toString("utf8"), cut }
+  } catch {
+    return undefined
+  }
+}
+
 /** The text a tool result carries, with `more` added to it. */
 function appended(content, more) {
   if (content === undefined || typeof content === "string") return `${content ?? ""}\n\n${more}`
@@ -62,6 +87,8 @@ export default {
     const calls = new Map()
     /** tool call id -> refusals given to calls under it, for an execute script to be told of. */
     const refused = new Map()
+    /** tool call id -> [{ call, message }] for writes from a script that were asked about and not yet seen to land. */
+    const asked = new Map()
     /** Where session trees live, once a session has started and said. */
     let root
     const mentionsTrees = (value) => JSON.stringify(value ?? "").includes(root ?? "/terminalfs")
@@ -188,6 +215,12 @@ export default {
         if (decision.effect === "deny" && decision.message && pending.some((call) => call.tool === "execute")) {
           refused.set(event.source.id, [...(refused.get(event.source.id) ?? []), decision.message])
         }
+        // A question declined — or, in a run with nobody to answer, rejected — reaches the script
+        // as the same bare "Unable to write". Kept until the write is seen to land.
+        if (decision.effect === "ask" && decision.message && pending.some((call) => call.tool === "execute")) {
+          const call = Number.isInteger(decision.call) ? sent[decision.call] : undefined
+          asked.set(event.source.id, [...(asked.get(event.source.id) ?? []), { call, message: decision.message }])
+        }
       } catch (error) {
         // A check that fell over is not a way through.
         event.effect = "deny"
@@ -203,15 +236,22 @@ export default {
       const call = pending[at]
       if (at >= 0) pending.splice(at, 1)
       if (pending.length === 0) calls.delete(event.id)
+      if (call && event.status === "completed" && asked.has(event.id)) {
+        asked.set(event.id, asked.get(event.id).filter((question) => question.call !== call))
+      }
 
       // A call refused inside an execute script reaches the script only as "Unable to write", so
       // the reasons are added to the script's own result when it ends. Whatever the script left
       // pending — a call the user declined, one that failed — ends with it.
       if (event.tool === "execute") {
-        const reasons = refused.get(event.id)
+        const unanswered = (asked.get(event.id) ?? []).map(
+          (question) => `${question.message}. It was not approved, so the write failed and the command did not run.`,
+        )
+        const reasons = [...(refused.get(event.id) ?? []), ...unanswered]
         refused.delete(event.id)
+        asked.delete(event.id)
         calls.delete(event.id)
-        if (reasons && event.status === "completed") event.result.content = appended(event.result.content, reasons.join("\n"))
+        if (reasons.length > 0 && event.status === "completed") event.result.content = appended(event.result.content, reasons.join("\n"))
         return
       }
       if (!call || event.status !== "completed" || typeof call.input?.content !== "string") return
@@ -222,10 +262,16 @@ export default {
       if (!control || !path.startsWith(control)) return
 
       const name = path.slice(control.length)
+      // Only a command's own name: the raw path is the tool's, and anything else would read files
+      // opencode never checked into the result.
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$/.test(name)) return
       const read = (file) => readFile(`${tree.mount}/cmd/${name}/${file}`, "utf8").catch(() => undefined)
       const state = (await read("wait"))?.trim()
       const exit = (await read("exitcode"))?.trim()
-      const stdout = (await read("stdout")) ?? ""
+      const output = await tail(`${tree.mount}/cmd/${name}/stdout`, shown)
+      const stdout = output?.cut
+        ? `[only the last ${shown / 1024} KiB; all of it is in ${tree.mount}/cmd/${name}/stdout]\n${output.text}`
+        : (output?.text ?? "")
 
       event.result.content = appended(
         event.result.content,

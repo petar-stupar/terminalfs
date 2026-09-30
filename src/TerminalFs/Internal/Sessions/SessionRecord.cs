@@ -18,6 +18,12 @@ namespace TerminalFs.Internal.Sessions;
 /// <param name="MountPath">Where the tree is mounted.</param>
 /// <param name="WorkingDirectory">The directory its commands run in.</param>
 /// <param name="Created">When the session was mounted.</param>
+/// <param name="Token">
+/// A value the server put in its environment, and so in every command it started, under
+/// <see cref="TokenVariable"/>. Its process group can outlive it and its pid be reused, so the
+/// token, not the group, is what says a process is one of its commands. Null in a record from a
+/// version without it, whose commands are then left alone.
+/// </param>
 internal sealed record SessionRecord(
     string Id,
     int Pid,
@@ -25,8 +31,15 @@ internal sealed record SessionRecord(
     int Port,
     string MountPath,
     string WorkingDirectory,
-    DateTimeOffset Created)
+    DateTimeOffset Created,
+    string? Token = null)
 {
+    /// <summary>The environment variable a session's server and its commands carry its token in.</summary>
+    internal const string TokenVariable = "TERMINALFS_SESSION_TOKEN";
+
+    /// <summary>A token for a server about to start, which nothing else will be carrying.</summary>
+    internal static string NewToken() => Guid.NewGuid().ToString("N");
+
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
     /// <summary>
@@ -47,7 +60,8 @@ internal sealed record SessionRecord(
             port,
             mountPath,
             workingDirectory,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            Environment.GetEnvironmentVariable(TokenVariable));
     }
 
     /// <summary>The record at <paramref name="path"/>, or null when there is none to read.</summary>

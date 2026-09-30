@@ -16,6 +16,14 @@ namespace TerminalFs.Core;
 public sealed class CommandRegistry : IDisposable
 {
     /// <summary>
+    /// The least a name nobody has written to yet is held for. A client that makes a file before
+    /// it writes to it closes the empty file first, and a keep of zero would free the name in
+    /// between, so the write that follows found it gone. Drafts are held for the keep time, or
+    /// this long when that is shorter.
+    /// </summary>
+    internal static readonly TimeSpan MinimumDraftKeep = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// How many just-removed ids are remembered. A caller's <c>rm -r</c> is several requests, and
     /// the timer can retire a command between any two of them; without this the rest of their
     /// removal fails on files that were there a moment ago. Sixty-four is far more than a client
@@ -127,12 +135,64 @@ public sealed class CommandRegistry : IDisposable
         ArgumentNullException.ThrowIfNull(options);
 
         string root = options.OutputRoot
-            ?? Path.Combine(Path.GetTempPath(), "terminalfs", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            ?? Path.Combine(DefaultOutputParent(Environment.GetEnvironmentVariable), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-        Directory.CreateDirectory(root);
-        SweepAbandoned(root);
+        PrivateDirectory(Path.GetDirectoryName(root)!);
+        PrivateDirectory(root);
+        // Only where this program chose: the directories beside one somebody named are theirs.
+        if (options.OutputRoot is null)
+        {
+            SweepAbandoned(Path.GetDirectoryName(root)!, root, quiet: false);
+        }
+
+        // Where output went before it moved under the user's cache, readable by everyone. What a
+        // server that is gone left there is cleared once, here; another user's is not ours to
+        // clear, and saying so on every start would be noise.
+        if (options.OutputRoot is null && !OperatingSystem.IsWindows())
+        {
+            SweepAbandoned(Path.Combine(Path.GetTempPath(), "terminalfs"), root, quiet: true);
+        }
 
         return new CommandRegistry(options, root);
+    }
+
+    /// <summary>
+    /// Where a server's output directory goes when nobody says: under this user's cache
+    /// directory rather than the shared temporary one.
+    /// </summary>
+    /// <remarks>
+    /// A command's output is whatever it printed, secrets included, and <c>/tmp</c> is shared by
+    /// every user on the machine: output there was readable by all of them, and the first user's
+    /// <c>/tmp/terminalfs</c> kept every other user's server from starting. On Windows the
+    /// temporary directory is already the user's own.
+    /// </remarks>
+    internal static string DefaultOutputParent(Func<string, string?> environment)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return Path.Combine(Path.GetTempPath(), "terminalfs");
+        }
+
+        string? cache = environment("XDG_CACHE_HOME");
+
+        return Path.Combine(
+            !string.IsNullOrEmpty(cache) && Path.IsPathRooted(cache)
+                ? cache
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache"),
+            "terminalfs-output");
+    }
+
+    /// <summary>Makes a directory only this user can open, or leaves one that is there.</summary>
+    internal static void PrivateDirectory(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(path);
+        }
+        else
+        {
+            Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     /// <summary>The command by that name, or null.</summary>
@@ -259,6 +319,9 @@ public sealed class CommandRegistry : IDisposable
         Touch();
     }
 
+    private TimeSpan DraftKeep =>
+        options.KeepAfterExit > MinimumDraftKeep ? options.KeepAfterExit : MinimumDraftKeep;
+
     /// <summary>The sentence a refused command is given.</summary>
     public string Refusal(DenyRule rule)
     {
@@ -358,7 +421,7 @@ public sealed class CommandRegistry : IDisposable
             var draft = new Draft(
                 name,
                 nextOrdinal++,
-                options.KeepAfterExit,
+                DraftKeep,
                 options.Settle,
                 options.TimeProvider,
                 Discard,
@@ -573,13 +636,27 @@ public sealed class CommandRegistry : IDisposable
             // Making the command creates its directory and opens its two output files, which is
             // real work to do under a lock. It stays here anyway: two commits of one name racing
             // outside it would both truncate the same stdout.
-            command = new Command(
-                name,
-                draft.Ordinal,
-                Path.Combine(OutputRoot, name),
-                options.KeepAfterExit,
-                options.TimeProvider,
-                Expire);
+            try
+            {
+                command = new Command(
+                    name,
+                    draft.Ordinal,
+                    Path.Combine(OutputRoot, name),
+                    options.KeepAfterExit,
+                    options.TimeProvider,
+                    Expire);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // No command without its output files, and the draft is claimed and cannot be
+                // decided again. The name is given back rather than left listed in /ctl, where it
+                // could be neither removed nor taken, and the reason goes where the server logs.
+                drafts.Remove(name);
+                Touch();
+                Diagnostics.Report($"could not make /cmd/{name}, so it did not run", exception);
+
+                return;
+            }
 
             drafts.Remove(name);
             commands[name] = command;
@@ -695,16 +772,26 @@ public sealed class CommandRegistry : IDisposable
     /// left by a server that was killed rather than stopped — its own cleanup never ran. Doing
     /// this at startup rather than at shutdown is what makes it happen at all in that case.
     /// </remarks>
-    private static void SweepAbandoned(string root)
+    private static void SweepAbandoned(string parent, string root, bool quiet)
     {
-        string? parent = Path.GetDirectoryName(root);
-
-        if (parent is null || !Directory.Exists(parent))
+        if (!Directory.Exists(parent))
         {
             return;
         }
 
-        foreach (string directory in Directory.EnumerateDirectories(parent))
+        string[] directories;
+
+        try
+        {
+            directories = Directory.GetDirectories(parent);
+        }
+        catch (Exception exception) when (quiet && exception is IOException or UnauthorizedAccessException)
+        {
+            // Somebody else's, and closed to us.
+            return;
+        }
+
+        foreach (string directory in directories)
         {
             string name = Path.GetFileName(directory);
 
@@ -739,7 +826,10 @@ public sealed class CommandRegistry : IDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                Diagnostics.Report($"sweeping {directory}", exception);
+                if (!quiet)
+                {
+                    Diagnostics.Report($"sweeping {directory}", exception);
+                }
             }
         }
     }

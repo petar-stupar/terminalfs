@@ -1,42 +1,111 @@
 # terminalfs
 
-Shell commands as a filesystem, served over 9P, so an agent runs one by writing a file and reads
-what it did with `cat` — instead of a command tool that blocks until the command finishes and
-hands back one lump of output.
+Shell commands as a filesystem, served over 9P. An agent runs a command by writing a file and
+reads what it did with `cat`, instead of calling a command tool that blocks until the command ends
+and returns all of its output at once.
 
 ```text
-echo 'dotnet build' > ~/mnt/terminalfs/ctl/build
-cat ~/mnt/terminalfs/cmd/build/wait
-cat ~/mnt/terminalfs/cmd/build/stdout
+echo 'dotnet build' > <mount>/ctl/build
+cat <mount>/cmd/build/wait
+cat <mount>/cmd/build/stdout
 ```
 
-Nothing there exists on disk. `ctl/build` is a file that runs what you write to it, and
-`cmd/build/` is this server's account of what happened, rendered when you read it.
+`<mount>` is where the tree is mounted: the path a plugin gives the agent, or `~/mnt/terminalfs`
+for a tree you mount yourself.
 
-Built on [`ninep`](https://github.com/petar-stupar/9p-csharp), the 9P2000 / 9P2000.u / 9P2000.L
-implementation for .NET.
+Output is a file that grows, so `tail`, `grep` and `wc -l` work on it, a long command is a
+directory you look at whenever you like, and several commands run at once because they are several
+files. The tree itself is not on disk: `cmd/build/` is the server's account of the command,
+rendered when read. What a command prints is kept under `~/.cache/terminalfs-output`, readable by
+you alone, and removed with the command.
 
-> **This runs commands as you.** Whatever is written to a control file is executed by your shell,
-> with your environment, your working directory and your credentials. The server binds loopback
-> and refuses to bind anything else; a deny list refuses some commands before they run. Neither is
-> a sandbox. Read [Refusing a command](#refusing-a-command) before pointing anything at this.
+Built on [`ninep`](https://github.com/petar-stupar/9p-csharp), the 9P implementation for .NET.
 
-## Why a filesystem
+> **This runs commands as you**, with your shell, environment and credentials. The server binds
+> loopback only, which every user on the machine can reach, and the rules below refuse commands
+> before they run, but none of it is a sandbox. See [Permissions](#permissions) and
+> [Limits](#limits).
 
-A command tool is a poor fit for a command that takes a while. It runs to completion before you
-learn anything, its output has to fit in one reply, and watching it as it goes needs a second
-mechanism that only some harnesses have.
+## Install
 
-As files, none of that is special. Output is a file that grows, so `tail -n 40`, `grep` and
-`wc -l` work on it and you read as much as you want. A command that takes ten minutes is a
-directory you look at whenever you like. Several commands run at once because they are several
-files. An agent with filesystem tools needs no new tool to use any of it.
+```sh
+curl -fsSL https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.sh | sh
+terminalfs --init-settings      # once: writes ~/.config/terminalfs/settings.json, which is required
+```
 
-## What it serves
+This installs to `~/.local/bin`. On Windows, use
+`irm https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.ps1 | iex`. From
+source: `dotnet publish src/TerminalFs -c Release -o out`.
+
+## Quick start
+
+With a plugin, each agent session gets a tree of its own, mounted when the session starts and
+removed when it ends. The agent is told where the tree is and given a skill for using it, and what
+it runs through the tree is held to the session's own permission rules. Sessions need Linux,
+`setsid`, and root to mount: either be root, or have `sudo` that asks no password for `mount` and
+`umount`, since the mount is made by a server in the background with no terminal to ask on.
+
+### Claude Code
+
+```sh
+terminalfs plugin install claude
+```
+
+This writes a plugin marketplace to `$XDG_DATA_HOME/terminalfs/claude-code` and prints the
+`claude plugin` commands that add it and, later, update it. To follow `main` instead, add the
+repository itself:
+
+```sh
+claude plugin marketplace add petar-stupar/terminalfs
+claude plugin install terminalfs@terminalfs
+```
+
+### opencode
+
+```sh
+terminalfs plugin install opencode
+```
+
+This puts the plugin in `$XDG_CONFIG_HOME/opencode/plugins/terminalfs/`, where opencode v2 finds it
+when it next starts. opencode's code mode leaves out the built-in file tools, so the plugin adds
+`read` and `write` to it as `file_read` and `file_write`. That lets one `execute` script write a
+command and read what it did. The plugin's `codemode` option names other tools to add, or none with
+`[]`. To pass it, install the plugin with `--dir <dir>` somewhere opencode does not look on its
+own, and name that directory in opencode's configuration:
+
+```json
+"plugins": [{ "package": "<dir>", "options": { "codemode": ["read", "write", "grep"] } }]
+```
+
+After installing a newer terminalfs, run `terminalfs plugin install` again, and for Claude Code also
+`claude plugin marketplace update terminalfs` and `claude plugin update terminalfs@terminalfs`.
+Either plugin needs `terminalfs` on the `PATH`; without it, a session carries on with no tree.
+
+### Without a plugin
+
+One shared tree, on Linux or macOS (on Windows, inside WSL):
+
+```sh
+terminalfs --mount          # mounts at ~/mnt/terminalfs
+terminalfs --unmount        # unmounts, and takes the container down if it mounted through one
+```
+
+| Platform | How it mounts |
+| --- | --- |
+| Linux | 9P directly, or `--mount-docker` through the container (needs Docker and cifs-utils) |
+| macOS | a container that mounts the 9P tree and re-exports it over SMB (needs Docker) |
+| Windows | not directly; run it inside WSL and mount there |
+
+The tree serves a skill for each agent under `skills/`. For opencode, add `<mount>/skills/opencode`
+to `skills.paths`. For Claude Code, copy `<mount>/skills/claude-code/terminalfs/SKILL.md` to
+`$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md` (`~/.claude/skills/…` by default). The skills name
+the real mount path when the server knows it: when it mounted the tree, or when `--path` says where
+you will. Otherwise replace `<mount>` in the copy. Only the settings file gates a shared tree.
+
+## The tree
 
 ```text
 /index.md               how the tree is laid out
-/ctl/index.md           how to run something
 /ctl/<name>             write a command here to run it
 /cmd/index.md           every command, with its status
 /cmd/<name>/command     the command, as it was written
@@ -48,358 +117,118 @@ files. An agent with filesystem tools needs no new tool to use any of it.
 /cmd/<name>/stderr      the same for standard error
 /cmd/<name>/wait        reading this blocks until it stops
 /cmd/<name>/kill        write anything here to end it
-/skills/<harness>/terminalfs/SKILL.md   an agent skill for using this
+/skills/<agent>/terminalfs/SKILL.md   how an agent should use this
 ```
 
-### Skills
-
-The cheapest way to run a command depends on the tools a harness has, so each gets a skill of its
-own, and both are called `terminalfs`:
-
-| Skill | How a command runs |
-| --- | --- |
-| `/skills/opencode/terminalfs/SKILL.md` | one `execute` script writes `ctl/<name>` and reads `wait` and `stdout` |
-| `/skills/claude-code/terminalfs/SKILL.md` | one Bash call, in a fixed shape: `cat >` a heredoc into `ctl/<name>`, then `cat` `wait` and `stdout` |
-
-Either way a command costs one tool call rather than three. The plugins for
-[Claude Code](#claude-code) and [opencode](#opencode) bring their skill with them, taken from the
-binary rather than a mount, since the plugin is what starts the tree. Without a plugin, opencode
-reads skills straight off the mount: add `skills/opencode` under the mountpoint to `skills.paths`.
-Claude Code only finds skills under its own configuration directory, so copy `skills/claude-code/terminalfs/SKILL.md` to
-`$CLAUDE_CONFIG_DIR/skills/terminalfs/SKILL.md`, replacing `<mount>` in it if it is still there.
-
-A skill names the mountpoint outright when this server was told one — either because it did the
-mounting, or because `--path` said where you would. Otherwise it writes `<mount>` and says where the
-real one comes from, because a path nobody stated would be a guess, and a skill naming a directory
-that is not there is worse than one that asks to be filled in. The Claude Code skill is a copy that
-outlives the tree it came from, so it gives way to a mount the session context names.
-
-Pages are [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf):
-markdown with YAML frontmatter and an `index.md` at every level.
+Every level has an `index.md`: markdown with YAML frontmatter, in
+[Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf).
 
 ## Running a command
 
-You choose the name. It is the file you write to and the directory the results appear in.
+You choose the name: it is the file you write and the directory the results appear in. A command
+runs when its file is closed, so it may be several lines, and a name runs **once**: writing it
+again fails with `File exists` until its directory is removed.
 
 ```sh
-echo 'dotnet build' > ~/mnt/terminalfs/ctl/build
-```
-
-Nothing runs until the file is closed, so a command is never half-executed and it may be several
-lines:
-
-```sh
-cat > ~/mnt/terminalfs/ctl/tests <<'EOF'
+cat > <mount>/ctl/tests <<'EOF'
 dotnet test --no-build 2>&1 | tail -40
 EOF
 ```
 
-A name runs **once**. Once it has run, taking it again is refused until its directory is removed.
-Between the write and the run, reading `ctl/<name>` gives back the command as written, for a write
-tool that checks what it wrote; writing to it again is still refused.
-Sequencing belongs inside a command — `a && b | c` is one command.
+Each command has its own file rather than all of them sharing one, because a mount merges
+concurrent writes to one path and commands would be lost. A name that has been taken and never
+written to is only held, and `ls ctl` shows it and `rm ctl/<name>` frees it. So a tool that creates
+a file before writing it works, and so does one that writes a temporary name and renames it: a
+written name waits `--settle` milliseconds (250) before it runs, and runs under the name it ends up
+with.
 
-### A name is only taken until something decides it
-
-`/cmd/<name>/` does not exist until there is a command to describe. Until the file is closed with
-a command in it, `/ctl/<name>` is a name you hold and nothing more — so a name you take and never
-write to leaves nothing behind, and `ls ctl` shows the ones in flight while `rm ctl/<name>` gives
-one back.
-
-That is what lets you write the file however your tools write files. Creating it first and writing
-to it afterwards works, and so does writing to a temporary name and renaming it into place:
+`cat cmd/<name>/wait` blocks until the command stops and prints its state. After 25 seconds it
+prints `running`, which means read it again. `stdout` and `stderr` end at what has arrived so far,
+so open them fresh each time. `ls cmd/<name>` shows whether a command is still going: `pid` and
+`kill` are there while it runs, and `exitcode` once it has stopped.
 
 ```sh
-echo 'dotnet build' > ~/mnt/terminalfs/ctl/build.tmp
-mv ~/mnt/terminalfs/ctl/build.tmp ~/mnt/terminalfs/ctl/build
+echo x > <mount>/cmd/build/kill   # end it, keeping what it produced
+rm -r <mount>/cmd/build           # remove it, ending it first if it is still running
 ```
 
-The command runs as `build`, never as `build.tmp`. A client that writes atomically closes the
-temporary file *before* it renames, so running on that close would run the command under a name
-you never chose; instead a name that has been written to waits `--settle` milliseconds (250 by
-default) before it runs, and anything that looks under `/cmd` runs it at once rather than waiting.
-`--settle 0` runs it at the close.
+A finished command is removed on its own once nothing has read it for `--keep` seconds (60).
 
-### A file per command, not one control file
+## Permissions
 
-The name is the path rather than a word inside a single `/ctl`, and that is not a matter of taste.
-A shared control file cannot carry concurrent writes through a mount: four callers writing at once
-reach the server as **one** write, because macOS smbfs merges writes to a path in its page cache.
-Three commands are lost with no error anywhere, which is the worst thing this program could do —
-the caller is told their command ran. Separate names are separate files, and a client has nothing
-to merge.
+A command can be refused by two things. The agent's own rules are applied by its plugin, before the
+command reaches the tree. The settings file is applied by the server to every tree, whoever writes
+to it.
 
-The same caching is why a control file reports a length of zero. When `/ctl` answered with help
-text, the client read it, laid the command over the front and sent back the whole thing, so what
-ran was the command followed by the tail of its own help. A file with no length has nothing to
-merge into — and, as a consequence, reading one through an SMB mount returns nothing. That is what
-`/ctl/index.md` is for.
+**Claude Code.** Claude Code checks its rules against the Bash call that writes the command, not the
+command inside it. The plugin's hook reads the command out of the call and checks it against the
+`Bash(...)` rules in the managed, user, project and local settings files: deny, then ask, then
+allow, applied to the whole command and to each subcommand. A command that no rule decides follows
+the permission mode:
 
-## Watching one
+| Mode | A command no rule decides |
+| --- | --- |
+| `default`, `acceptEdits` | asks |
+| `auto` | left to auto mode's classifier, which sees the whole call |
+| `bypassPermissions` | runs |
+| `dontAsk` | refused |
+| `plan` | refused, as everything is until the plan is approved |
 
-`cat cmd/<name>/wait` blocks until the command stops and prints its state. It gives up after
-twenty-five seconds and prints `running`, which means read it again — a read that outlived a
-client's own patience would be reported as a broken mount rather than as a command still working.
+Rules given on the command line, a skill's `allowed-tools`, a "yes, for this session" at a prompt,
+and managed policy that is not a file are not seen at all. A command they would allow follows the
+mode above, and one they would deny is stopped only by a rule in a file.
 
-`stdout` and `stderr` end at what has arrived rather than waiting for more, which is what makes
-them ordinary files. Open them fresh each time; a handle held open will not see what arrives later.
+**opencode.** opencode checks a write to `ctl/<name>` as a file edit, so its `shell` rules never
+see the command. The plugin answers that check from the session's `shell` rules (and
+`permission.bash`) the way opencode reads them for its shell tool. A deny refuses the write and
+names the rule, an ask shows opencode's prompt with the command as the diff, an allow lets it
+through, and a command no rule matches is asked about. Inside an `execute` script a refused write
+fails with only `Unable to write`, and the rule that refused it is added to the script's result.
+Answering "always" to that prompt allows edits, not commands. To stop being asked about a
+command, write a `shell` allow rule.
 
-`ls cmd/<name>` says whether it is still going without reading anything: `pid` and `kill` are there
-while it runs, `exitcode` once it has stopped. A directory holding only `command`, `status` and
-`reason` is one that was refused before it ran; there is no output because nothing ran.
+Both plugins also refuse what they cannot read a command out of, an edit anywhere in a tree, and
+anything aimed at another session's tree. In the same call as a command, only reads of the tree
+may follow it; a read of any other file has to be a call of its own.
 
-## Stopping and clearing up
-
-```sh
-echo x > ~/mnt/terminalfs/cmd/build/kill   # end it, keeping what it produced
-rm -r ~/mnt/terminalfs/cmd/build           # remove it, ending it first if it is still running
-```
-
-A finished command is removed on its own once nothing has read it for `--keep` seconds (60 by
-default), so a long session does not fill up with old output. A name taken and never written to is
-freed on the same clock. Removing a directory while something
-is reading it takes the command out of the tree at once and leaves the bytes until the reader is
-done. A refused command is kept and cleared the same way, with the clock starting at the write that
-failed.
-
-## Refusing a command
-
-The server will not start without a settings file. It runs whatever is written to a control file,
-and a server doing that under rules nobody wrote is worse than one that did not start.
-
-```sh
-terminalfs --init-settings      # writes ~/.config/terminalfs/settings.json
-```
-
-The shape is Claude Code's `settings.local.json`, so a list written for an agent harness can be
-copied across whole:
+**The settings file** has the shape of Claude Code's `settings.local.json`, and only its `Bash(...)`
+deny rules count:
 
 ```json
 { "permissions": { "deny": ["Bash(sudo:*)", "Bash(git push --force:*)"] } }
 ```
 
-Three rule shapes: `Bash(git push:*)` is a prefix that stops at a word boundary, `Bash(rm -rf /*)`
-is a glob anchored at both ends, and `Bash(halt)` is exact. Each is applied to the command as a
-whole **and** to each of its segments, because `cd /tmp && sudo ls` is two commands and a rule that
-read only the whole string would let the second through behind the first. Entries for other tools —
-`Read(...)`, `WebFetch(...)` — are ignored rather than refused, so the file stays shareable.
+`Bash(git push:*)` is a prefix that stops at a word, `Bash(rm -rf /*)` is a glob, and `Bash(halt)`
+is exact. Each rule is applied to the whole command and to each part, so `cd /tmp && sudo ls` is
+refused. The server will not start without the file. It re-reads the file while it runs, and an
+edit that does not parse keeps the rules already in force.
 
-The file lives outside the tree, and is read before the socket is bound: a deny list served through
-the filesystem it governs would be editable by whatever it exists to restrain. It is re-read while
-the server runs, and **an edit that does not parse keeps the rules already in force** — an editor
-that truncates before it writes leaves a window in which the file is empty, and empty for a deny
-list means everything is permitted.
+A refused command still gets a directory, `cmd/<name>/`, holding only `command`, `status`
+(`denied`) and `reason`, which names the rule. The write itself fails with just
+`Operation not permitted`, so read `reason` to find out why.
 
-A refused command still gets its directory. The write to `/ctl/<name>` fails, and `/cmd/<name>/`
-appears holding three files — `command`, what you wrote; `status`, which reads `denied`; and
-`reason`, which names the rule. Nothing else is there, because nothing ran: a `stdout` on a command
-that never started would be a file promising output that can never arrive. The name is spent until
-the directory is removed, which is the rule every other command already follows.
+**None of this is a boundary.** The agent runs as you, the same as the server. A shell has many ways
+to spell a command (`$(which sudo)` is not `sudo`), and any process of yours can write to any tree.
+The rules keep an agent that follows its instructions inside what you wrote for it.
 
-**It is not a sandbox.** A shell has too many ways of spelling the same thing for a textual list to
-be complete; `$(which sudo)` is not `sudo`. It exists to stop an agent doing by accident what
-nobody asked for.
+## Limits
 
-### Where the reason is
+- There is no terminal and no standard input. Anything that prompts gets end-of-file, and editors,
+  pagers and REPLs cannot run. Pass the flag that avoids the prompt, or pipe the answer in.
+- Sessions, and so the plugins, are Linux-only for now.
+- A session tree stays until its session ends. `terminalfs session gc --older-than 12h` clears up
+  the ones an agent left behind.
+- Loopback is not private to you: every user on the machine can connect to a tree's port and run
+  commands as you. Run terminalfs only where you are the only user.
 
-A refusal arrives at a mounted caller as a number and nothing else — `Operation not permitted`,
-`File exists` — because 9P2000.L, which a Linux mount and the SMB bridge both speak, carries no
-sentence with an error. So the reason is put where the caller can walk to it.
+## Options
 
-```sh
-$ echo 'sudo ls' > ~/mnt/terminalfs/ctl/lr2      # Operation not permitted
-$ ls ~/mnt/terminalfs/cmd/lr2
-command  status  reason
-$ cat ~/mnt/terminalfs/cmd/lr2/reason
-denied by rule 'Bash(sudo:*)' in /Users/you/.config/terminalfs/settings.json
-```
-
-`File exists` is the one refusal with nowhere to write a sentence: the name belongs to a command
-that is already there, or to somebody who is writing one now. `ls cmd/<name>` is the answer when
-it has run — the directory exists, which is why the name was not free — and `ls ctl` shows it if
-it is still being written. Remove it, or pick another name.
-
-## Install
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.sh | sh
-```
-
-Installs to `~/.local/bin`. The plugins for [Claude Code](#claude-code) and [opencode](#opencode)
-come with the binary: `terminalfs plugin install claude|opencode` writes one out. On Windows, `irm https://raw.githubusercontent.com/petar-stupar/terminalfs/main/scripts/install.ps1 | iex`.
-
-### From source
-
-```sh
-git clone https://github.com/petar-stupar/terminalfs && cd terminalfs
-dotnet publish src/TerminalFs -c Release -o out
-```
-
-## Run it
-
-```sh
-terminalfs --init-settings
-terminalfs --mount-docker
-```
-
-| Platform | How it mounts |
-| --- | --- |
-| Linux | 9P directly, or `--mount-docker` for the bridge |
-| macOS | a container that mounts the 9P tree and re-exports it over SMB |
-| Windows | not directly; run it inside WSL and mount there |
-
-`--unmount` clears up a mount and its container, and is safe to run when nothing is mounted.
-`--shell` and `--cwd` say what commands run under and where; `--keep` how long a finished command,
-or a name nobody wrote to, is kept; `--wait-timeout` how long a read of `wait` blocks; `--settle`
-how long a name that has been written to waits before it runs. `--path` says where the tree goes,
-and states it for the served skills even when you mount it yourself.
-
-### A tree per session
-
-One shared tree cannot tell which agent wrote to `/ctl`. A session gets a server of its own, on a
-free loopback port, mounted at a directory named after it:
-
-```sh
-terminalfs session start --id "$SESSION_ID" --cwd "$PWD"   # prints the mount path
-terminalfs session stop --id "$SESSION_ID"
-terminalfs session gc
-```
-
-`start` returns once the tree is mounted and prints only its path, under `$XDG_RUNTIME_DIR/terminalfs`,
-or `$XDG_CACHE_HOME/terminalfs` (`~/.cache/terminalfs`) where that is not set. `$TERMINALFS_RUNTIME_DIR`
-comes before both, for a machine that wants every agent's trees in a directory of its choosing. Starting a session that
-is already mounted prints the same path again and keeps the directory it was first started in.
-`stop` stops the server, which kills its commands, then unmounts and removes the directory, and is
-safe to run when there is nothing to stop. `gc` does the same for every session whose server is
-gone; `--older-than 12h` also stops live sessions that old, commands and all, for agents that went
-away without stopping theirs.
-
-Sessions are Linux-only for now. They need the settings file (`terminalfs --init-settings`),
-`setsid`, and root to mount — through `sudo` for `mount` and `umount` unless you are root already.
-Each session only knows the runtime directory it was started under, so run `stop` and `gc` with the
-same runtime directory as `start`. Sessions separate agents, not users: every tree runs commands as
-you, so a command run through one session can reach another session's tree like any other file of
-yours.
-
-### Claude Code
-
-The plugin gives each Claude Code session a tree of its own and holds what the session runs
-through it to the session's own permission rules. The binary carries the one that goes with it:
-
-```sh
-terminalfs plugin install claude
-```
-
-writes a marketplace holding the plugin to `$XDG_DATA_HOME/terminalfs/claude-code` (`--dir` puts it
-elsewhere) and prints the two commands that add it to Claude Code. After installing a newer
-terminalfs, run it again and then `claude plugin marketplace update terminalfs`. The repository is
-the same marketplace, if you would rather follow `main`:
-
-```sh
-claude plugin marketplace add petar-stupar/terminalfs
-claude plugin install terminalfs@terminalfs
-```
-
-It needs `terminalfs` on the `PATH` and whatever sessions need. Without the binary the hooks fail,
-and Claude Code reports that and carries on with no tree and no check. When a session starts, its
-tree is mounted and the agent is told where; when it ends, a stop is started that runs on after
-Claude Code has gone, since the hooks at the end of a session get a second and a half. The agent gets
-the Claude Code skill, which writes a command and reads what it did in one Bash call:
-
-```sh
-cat > <mount>/ctl/build <<'CMD'
-dotnet build 2>&1 | tail -40
-CMD
-cat <mount>/cmd/build/wait; cat <mount>/cmd/build/stdout
-```
-
-Claude Code checks its permission rules against that call — `cat` — not against the command inside
-it, so before the call runs, a hook reads the command back out and checks it against the same rules:
-`permissions.deny`, `ask` and `allow` from the managed, user, project and local settings files,
-deny first, whole command and every subcommand, as Claude Code would for the same command run with
-Bash. A deny refuses it with the rule and the file it is in, an ask asks, an allow runs it. Claude
-Code takes the hook's refusal or question over any allow rule of its own. Anything no rule decides
-follows the session's permission mode:
-
-| Mode | A command no rule decides |
-| --- | --- |
-| `default`, `acceptEdits` | asks |
-| `auto` | left to auto mode's classifier, which sees the whole call, command included |
-| `bypassPermissions` | runs |
-| `dontAsk` | refused |
-| `plan` | refused, as is everything else, until the plan is approved |
-
-The hook also refuses whatever it cannot read a command out of: a write into `ctl/` in any other
-shape, anything but reads after the command in the same call, an edit anywhere in a tree, a command
-that itself writes into a tree, another session's tree, the skill's shape aimed at a path it cannot
-read, and the trees' directory spelled through the variables it came from. Reading a session's own
-tree, and ending one of its commands, is allowed.
-
-The rules it reads are the ones in files. Rules given another way — `--allowedTools`,
-`--disallowedTools` and `--settings` on the command line, a skill's `allowed-tools`, a "yes, for this
-session" at a prompt, and managed policy delivered by MDM, the registry or the claude.ai console
-rather than as a file — are Claude Code's alone, and a command they would allow is asked about, or
-in `dontAsk` refused.
-
-**This is a check, not a boundary.** The agent runs as you, the same as the server: it can find
-another session's port in the runtime directory and speak 9P to it, and a path built at run time,
-reached through a link, or spelled a way the hook does not recognise is one it never sees. It keeps
-an agent that follows its instructions inside the rules you wrote for it.
-
-### opencode
-
-The opencode plugin is the same for opencode (v2): a tree for each session, and the session's own
-permission rules applied to what runs through it.
-
-```sh
-terminalfs plugin install opencode
-```
-
-puts it in `$XDG_CONFIG_HOME/opencode/plugins/terminalfs/`, where opencode finds it when it next
-starts; run it again after installing a newer terminalfs. `--dir` puts it elsewhere, for naming in
-`plugins` in your opencode configuration. The plugin is one script, `plugins/opencode/index.js` in
-this repository, and it asks the binary for its skill, so the skill is always the one written for
-the terminalfs that runs. It needs `terminalfs` on the `PATH` and whatever sessions need.
-
-The tree is started before the session's first prompt and the agent told where it is, and it is
-stopped when the session is deleted or opencode's server stops. The agent gets the opencode skill,
-which writes a command and reads what it did in one `execute` script. opencode's code mode leaves
-its built-in file tools out, so the plugin copies `read` and `write` into it as `file_read` and
-`file_write`: the copies run the built-ins' own code, permission checks and all, a rule that
-switches a built-in off switches its copy off too, and the built-ins stay ordinary tools. The
-plugin's `codemode` option copies others, or none with `[]` — in the configuration, as
-`"plugins": [{ "package": "<path>/plugins/opencode", "options": { "codemode": ["read", "write", "grep"] } }]`.
-Writes into a tree from one script are checked one at a time; several at once are refused. A command written with the plain `write` tool gets its state, exit
-code and output added to the write's result, so it is one call that way too.
-
-opencode checks that write as an edit of a file, and its `shell` rules never see the command in it.
-The plugin hooks that check and answers it from the session's own rules, read as opencode reads
-them — the last rule that matches wins, every command in the line has to be allowed — so a deny
-refuses the write naming the rule, an ask shows opencode's own prompt with the command as the diff,
-and an allow lets it through. The same holds for a write made from an `execute` script, where a
-refusal reaches the script only as `Unable to write`, and the rule that refused it is added to the
-script's result. `permission.bash` rules count as `shell` rules, as opencode migrates them. A shell tool writing into the tree in the Claude Code skill's shape is checked the same way,
-and the same things are refused: another session's tree, an edit or a patch in a tree, and a write
-the plugin cannot read a command out of.
-
-The prompt is opencode's prompt for an edit, so an "always" answer saves what opencode saves for
-an edit: every edit in the project allowed from then on. The next terminalfs command is still asked
-about, because the plugin answers each one from the `shell` rules; to stop being asked, write a
-`shell` allow rule. Likewise "always" answers given to opencode's own shell tool are not seen here.
-
-A write's result waits for the command, up to the tree's `wait` timeout (25 seconds); a command
-still running then says so, and the rest is read from `cmd/<name>/`. A session keeps its tree, and
-its server, until the session is deleted or opencode's server stops; `terminalfs session gc
---older-than <duration>` clears up the ones left behind by a server that ran for days. Like
-sessions themselves, this is Linux-only. The same caveat as for Claude Code applies: this is a check
-an agent following its instructions stays inside, not a boundary.
-
-### What it cannot do
-
-There is no terminal and no standard input. A command's stdin is closed at once, so anything that
-prompts gets end-of-file rather than waiting, and full-screen programs — an editor, a pager, a
-REPL — cannot run here. Pass the flag that avoids the prompt, or pipe the answer in inside the
-command.
+`terminalfs --help` and `terminalfs session --help` list everything. The ones most worth knowing:
+`--shell` and `--cwd` set what commands run under and where; `--path` sets where the shared tree is
+mounted, and names it in the served skills; `--keep`, `--wait-timeout` and `--settle` change the
+timings above. Session trees go in a `terminalfs` directory under `$TERMINALFS_RUNTIME_DIR`, else
+`$XDG_RUNTIME_DIR`, else `$XDG_CACHE_HOME` (`~/.cache`). A session is found only under the directory
+it was started in, so run `session stop` and `session gc` with the same environment as the agent.
 
 ## Build
 
