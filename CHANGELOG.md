@@ -8,6 +8,8 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-04
+
 ### Added
 
 - **Strict mode for the Claude Code hook.** With `TERMINALFS_CLAUDE_STRICT` set to `1` or `true`
@@ -249,7 +251,8 @@ refuses a tag whose version has no section here.
 - **`--listen` off loopback is refused, with no flag to override it.** This server runs whatever is
   written to a control file, as the user who started it; whoever can open the socket gets a shell.
 
-[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/petar-stupar/terminalfs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/petar-stupar/terminalfs/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/petar-stupar/terminalfs/compare/v0.2.0...v0.3.2
 [0.2.0]: https://github.com/petar-stupar/terminalfs/compare/v0.1.0...v0.2.0
