@@ -8,6 +8,18 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-04
+
+### Added
+
+- **Strict mode for the Claude Code hook.** With `TERMINALFS_CLAUDE_STRICT` set to `1` or `true`
+  in the hook's environment, a Bash call that bypasses the session's tree, or reads the tree
+  alongside other commands, is refused instead of left to Claude Code, with a reason that names
+  the tree and the shape to run the command in. Claude Code's own rules cannot express "Bash only
+  through the tree", because a deny on `Bash` also refuses the call that writes to `ctl/`. It
+  applies in every permission mode but `plan`, `auto` included, and only to the Bash tool; without
+  the variable nothing changes.
+
 ## [0.4.0] — 2026-10-01
 
 ### Added
@@ -239,7 +251,8 @@ refuses a tag whose version has no section here.
 - **`--listen` off loopback is refused, with no flag to override it.** This server runs whatever is
   written to a control file, as the user who started it; whoever can open the socket gets a shell.
 
-[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/petar-stupar/terminalfs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/petar-stupar/terminalfs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/petar-stupar/terminalfs/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/petar-stupar/terminalfs/compare/v0.2.0...v0.3.2
 [0.2.0]: https://github.com/petar-stupar/terminalfs/compare/v0.1.0...v0.2.0

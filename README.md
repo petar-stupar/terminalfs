@@ -178,6 +178,15 @@ Rules given on the command line, a skill's `allowed-tools`, a "yes, for this ses
 and managed policy that is not a file are not seen at all. A command they would allow follows the
 mode above, and one they would deny is stopped only by a rule in a file.
 
+**Strict mode.** A Bash call that does not touch the tree, or reads it alongside other commands, is
+Claude Code's own business, and the hook gives it no answer. An environment that wants every
+command to run through the tree cannot say so in Claude Code's rules, since a deny on `Bash` would
+refuse the call that writes to `ctl/` as well. For that, set `TERMINALFS_CLAUDE_STRICT=1` (or
+`true`) where Claude Code runs its hooks: the hook then refuses such Bash calls, and tells the
+model where the tree is and to run the command through it. It refuses them in `auto` mode too,
+since the point is the shape and not what the classifier makes of the command. Plan mode is left
+as it was, and the Write, Edit and other tools are not affected.
+
 **opencode.** opencode checks a write to `ctl/<name>` as a file edit, so its `shell` rules never
 see the command. The plugin answers that check from the session's `shell` rules (and
 `permission.bash`) the way opencode reads them for its shell tool. A deny refuses the write and

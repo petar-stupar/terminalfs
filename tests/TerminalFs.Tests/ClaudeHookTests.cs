@@ -519,6 +519,114 @@ public sealed class ClaudeHookTests : IDisposable
     public void ACallThatDoesNotTouchTheTreesIsLeftAlone(string command) =>
         Assert.Null(Bash(command));
 
+    /// <summary>
+    /// Strict mode is for an environment that wants every command run through the tree, which
+    /// Claude Code's own rules cannot say: a deny on Bash would refuse the call that writes to ctl/.
+    /// </summary>
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    [InlineData("TRUE")]
+    public void InStrictModeABashCallThatBypassesTheTreeIsRefusedAndToldWhereToRunIt(string strict)
+    {
+        environment[ClaudeHook.StrictVariable] = strict;
+
+        ClaudeDecision? decision = Bash("dotnet build");
+
+        Assert.Equal("deny", decision?.Decision);
+        Assert.Equal(
+            $"terminalfs: Bash runs only through this session's tree at {Tree}; write the command to {Tree}/ctl/<name> and read {Tree}/cmd/<name>/wait (see the terminalfs skill)",
+            decision?.Reason);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0")]
+    [InlineData("false")]
+    [InlineData("")]
+    public void OutsideStrictModeABashCallThatBypassesTheTreeIsLeftAlone(string? strict)
+    {
+        if (strict is not null)
+        {
+            environment[ClaudeHook.StrictVariable] = strict;
+        }
+
+        Assert.Null(Bash("dotnet build"));
+        Assert.Null(Bash($"cat {Tree}/cmd/build/stdout && rm -rf build"));
+    }
+
+    [Fact]
+    public void InStrictModeACallThatMixesTheTreeWithOtherCommandsIsRefused()
+    {
+        environment[ClaudeHook.StrictVariable] = "1";
+
+        ClaudeDecision? decision = Bash($"cat {Tree}/cmd/build/stdout && rm -rf build");
+
+        Assert.Equal("deny", decision?.Decision);
+        Assert.Equal(
+            $"terminalfs: this call mixes the tree with other commands; keep reads of the tree in a call of their own, and run the rest through {Tree}/ctl/<name>",
+            decision?.Reason);
+    }
+
+    /// <summary>Strict is about Bash; the editing tools outside the tree are Claude Code's alone.</summary>
+    [Fact]
+    public void StrictModeLeavesOtherToolsAlone()
+    {
+        environment[ClaudeHook.StrictVariable] = "1";
+
+        Assert.Null(Hook("Write", new { file_path = Path.Combine(Project, "notes.txt"), content = "x" }));
+        Assert.Null(Hook("Edit", new { file_path = Path.Combine(Project, "file.txt"), old_string = "a", new_string = "b" }));
+        Assert.Null(Hook("Read", new { file_path = Path.Combine(Project, "file.txt") }));
+    }
+
+    /// <summary>
+    /// Auto mode is refused too: the point is the shape, not what the classifier would make of the
+    /// command.
+    /// </summary>
+    [Theory]
+    [InlineData("default")]
+    [InlineData("acceptEdits")]
+    [InlineData("bypassPermissions")]
+    [InlineData("dontAsk")]
+    [InlineData("auto")]
+    public void StrictModeRefusesABypassInEveryModeButPlan(string mode)
+    {
+        environment[ClaudeHook.StrictVariable] = "1";
+
+        Assert.Equal("deny", Bash("dotnet build", mode)?.Decision);
+    }
+
+    [Fact]
+    public void InStrictModeTheSkillsShapeIsStillHeldToTheRules()
+    {
+        environment[ClaudeHook.StrictVariable] = "1";
+        Settings(Project, """{ "permissions": { "allow": ["Bash(dotnet build *)", "Bash(tail *)"], "ask": ["Bash(git push *)"] } }""");
+
+        Assert.Equal("allow", Bash(Shape(Tree, "dotnet build 2>&1 | tail -40"))?.Decision);
+        Assert.Equal("ask", Bash(Shape(Tree, "git push origin main"))?.Decision);
+        Assert.Equal("ask", Bash(Shape(Tree, "make"))?.Decision);
+        Assert.Null(Bash(Shape(Tree, "make"), "auto"));
+        Assert.Equal("allow", Bash($"cat {Tree}/cmd/build/wait; cat {Tree}/cmd/build/stdout")?.Decision);
+    }
+
+    /// <summary>
+    /// Nothing runs through the tree in plan mode, so strict does not refuse what runs outside it
+    /// either: plan mode stays Claude Code's to decide.
+    /// </summary>
+    [Fact]
+    public void StrictModeLeavesPlanModeAsItWas()
+    {
+        environment[ClaudeHook.StrictVariable] = "1";
+        Settings(Project, """{ "permissions": { "allow": ["Bash"] } }""");
+
+        ClaudeDecision? run = Bash(Shape(Tree, "ls"), mode: "plan");
+
+        Assert.Equal("deny", run?.Decision);
+        Assert.Contains("plan mode", run?.Reason, StringComparison.Ordinal);
+        Assert.Null(Bash("git log", mode: "plan"));
+        Assert.Null(Bash($"cat {Tree}/cmd/build/stdout && rm -rf build", mode: "plan"));
+    }
+
     [Fact]
     public void ATreeIsNeverEditedInPlace()
     {

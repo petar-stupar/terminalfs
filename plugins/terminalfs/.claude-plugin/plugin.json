@@ -1,7 +1,7 @@
 {
   "name": "terminalfs",
   "displayName": "terminalfs",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A terminalfs tree for each Claude Code session, with the session's own permission rules applied to every command run through it",
   "author": {
     "name": "petar-stupar"
