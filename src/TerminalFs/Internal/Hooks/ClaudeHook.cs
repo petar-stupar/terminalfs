@@ -87,9 +87,22 @@ internal sealed record ClaudeDecision(string Decision, string Reason)
 /// here is <c>auto</c>: its classifier reads the whole Bash call, command included, and approving
 /// or refusing what it sees is exactly its job.
 /// </para>
+/// <para>
+/// A Bash call that does not touch the tree, or reads it alongside other commands, is Claude Code's
+/// own business and gets no answer here — unless <c>TERMINALFS_CLAUDE_STRICT</c> is <c>1</c> or
+/// <c>true</c>, for an environment that wants every command run through the tree. Claude Code's
+/// own rules cannot say that: a deny on <c>Bash</c> would refuse the call that writes to
+/// <c>ctl/</c> too. Strict refuses those calls instead, in every mode but <c>plan</c>, where nothing
+/// runs through the tree either and Claude Code's own plan mode decides. It refuses in
+/// <c>auto</c> as well, since the point is the shape and not what the classifier thinks of the
+/// command. Other tools are not touched by it.
+/// </para>
 /// </remarks>
 internal sealed class ClaudeHook(SessionPaths paths, Func<string, string?> environment, string home, string managedDirectory)
 {
+    /// <summary>The variable that, set to <c>1</c> or <c>true</c>, makes Bash run only through the tree.</summary>
+    internal const string StrictVariable = "TERMINALFS_CLAUDE_STRICT";
+
     /// <summary>The JSON a <c>SessionStart</c> hook adds <paramref name="context"/> to the session with.</summary>
     internal static string SessionContext(string context)
     {
@@ -131,9 +144,20 @@ internal sealed class ClaudeHook(SessionPaths paths, Func<string, string?> envir
             TreeCall.Refused refused => new ClaudeDecision("deny", "terminalfs: " + refused.Reason),
             TreeCall.Harmless => new ClaudeDecision("allow", "terminalfs: only reads or ends commands in this session's tree"),
             TreeCall.Run run => Decide(run, input),
+            TreeCall.Elsewhere or TreeCall.Mixed when input.ToolName == "Bash" && input.PermissionMode != "plan" && Strict =>
+                Unshaped(call, paths.MountPath(input.SessionId)),
             _ => null,
         };
     }
+
+    private bool Strict => environment(StrictVariable)?.Trim() is { } value
+        && (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase));
+
+    private static ClaudeDecision Unshaped(TreeCall call, string tree) => new(
+        "deny",
+        call is TreeCall.Mixed
+            ? $"terminalfs: this call mixes the tree with other commands; keep reads of the tree in a call of their own, and run the rest through {tree}/ctl/<name>"
+            : $"terminalfs: Bash runs only through this session's tree at {tree}; write the command to {tree}/ctl/<name> and read {tree}/cmd/<name>/wait (see the terminalfs skill)");
 
     private ClaudeDecision? Decide(TreeCall.Run run, ClaudeHookInput input)
     {
