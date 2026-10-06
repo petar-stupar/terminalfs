@@ -27,6 +27,7 @@ public sealed class SessionPathsTests
     [Theory]
     [InlineData("abc.session")]
     [InlineData("abc.log")]
+    [InlineData("abc.owner")]
     [InlineData("abc.session.tmp")]
     [InlineData("abc.LOG")]
     public void AnIdSpelledLikeASessionsOwnFilesIsRefused(string id) =>

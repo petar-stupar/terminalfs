@@ -111,6 +111,58 @@ internal static class ProcessTable
     }
 
     /// <summary>
+    /// The parent of <paramref name="pid"/>, or null when it is gone or nobody says. Only Linux
+    /// says, through <c>/proc</c>.
+    /// </summary>
+    internal static int? ParentOf(int pid)
+    {
+        if (!OperatingSystem.IsLinux() || pid <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            // The parent is the fourth field, the second after the command name.
+            string stat = File.ReadAllText($"/proc/{pid}/stat");
+            string[] fields = stat[(stat.LastIndexOf(')') + 2)..].Split(' ');
+
+            return fields.Length > 1
+                && int.TryParse(fields[1], System.Globalization.CultureInfo.InvariantCulture, out int parent)
+                && parent > 0
+                    ? parent
+                    : null;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What <paramref name="pid"/> is running, its arguments separated by spaces, or null when it
+    /// is gone or nobody says. For people reading a history, never for deciding anything.
+    /// </summary>
+    internal static string? CommandLine(int pid)
+    {
+        if (!OperatingSystem.IsLinux() || pid <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            string line = File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ').Trim();
+
+            return line.Length > 300 ? line[..300] + "…" : line;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Whether <paramref name="pid"/> is a zombie. Only Linux says, through <c>/proc</c>; where it
     /// does not, a process is taken at its word, which is only wrong under a parent that never
     /// reaps.

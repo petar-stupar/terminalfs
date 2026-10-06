@@ -46,6 +46,14 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
     /// <summary>How long to wait for somebody else starting, stopping or collecting sessions.</summary>
     internal TimeSpan LockTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// Who is asking, as the history records it. The process and its ancestors by default.
+    /// </summary>
+    internal string Requester { get; init; } = SessionOwner.Ancestry();
+
+    /// <summary>How large the history grows before it is rotated.</summary>
+    internal const long HistoryLimit = 256 * 1024;
+
     private static readonly TimeSpan Poll = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
@@ -57,7 +65,15 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
     /// mount nobody recorded — is cleared up and started again, because an agent handed a path
     /// that does not work is worse off than one that waited for a new one.
     /// </remarks>
-    internal async Task<string> StartAsync(string id, string workingDirectory, CancellationToken cancellationToken)
+    internal Task<string> StartAsync(string id, string workingDirectory, CancellationToken cancellationToken) =>
+        StartAsync(id, workingDirectory, owner: null, cancellationToken);
+
+    /// <inheritdoc cref="StartAsync(string, string, CancellationToken)"/>
+    /// <param name="owner">
+    /// The agent process this is for, which becomes the one whose end stops the session. Null
+    /// leaves whoever owned it before.
+    /// </param>
+    internal async Task<string> StartAsync(string id, string workingDirectory, SessionOwner? owner, CancellationToken cancellationToken)
     {
         using FileStream held = await LockAsync(cancellationToken).ConfigureAwait(false);
 
@@ -74,7 +90,7 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
 
         // Nothing here would remove one, and neither the log nor the record could be written
         // over it.
-        foreach (string name in (string[])[id + ".session", id + ".session.tmp", id + ".log"])
+        foreach (string name in SessionPaths.OwnFiles(id))
         {
             if (listed.GetValueOrDefault(name) == EntryKind.Directory)
             {
@@ -99,7 +115,17 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
                     + "stop the session to change that");
             }
 
+            Own(id, owner, "resumed");
+
             return mountPath;
+        }
+
+        if (existing is not null || listed.ContainsKey(id))
+        {
+            History($"start {id}: clearing up what was there first: "
+                + (existing is null ? "no record of a server"
+                    : !existing.ServerIsAlive() ? $"its server, pid {existing.Pid}, is gone"
+                    : "its tree is no longer mounted"));
         }
 
         await TearDownAsync(id, existing, cancellationToken).ConfigureAwait(false);
@@ -120,6 +146,8 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
             {
                 if (SessionRecord.Read(paths.RecordPath(id)) is { } record && record.Describes(id))
                 {
+                    Own(id, owner, $"started, server pid {record.Pid}");
+
                     return mountPath;
                 }
 
@@ -157,6 +185,8 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
                     why += $"\n  and it could not be cleared up: {exception.Message}";
                 }
 
+                History($"start {id}: did not start: {failure}");
+
                 throw new MountException($"session {id} did not start: {failure}.{why}");
             }
 
@@ -169,12 +199,33 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
     /// mount and directory. Safe to call when nothing is there.
     /// </summary>
     /// <returns>Whether there was anything to stop.</returns>
-    internal async Task<bool> StopAsync(string id, CancellationToken cancellationToken)
+    internal Task<bool> StopAsync(string id, CancellationToken cancellationToken) =>
+        StopAsync(id, caller: null, cancellationToken);
+
+    /// <inheritdoc cref="StopAsync(string, CancellationToken)"/>
+    /// <param name="caller">
+    /// The agent process whose end this is, or null for a stop asked for outright. One that is not
+    /// the session's owner, while the owner is still running, stops nothing: the session was
+    /// resumed by another process, and the tree is that process's now.
+    /// </param>
+    internal async Task<bool> StopAsync(string id, SessionOwner? caller, CancellationToken cancellationToken)
     {
         using FileStream held = await LockAsync(cancellationToken).ConfigureAwait(false);
 
+        if (caller is not null
+            && SessionOwner.Read(paths.OwnerPath(id)) is { } owner
+            && !owner.IsSameProcess(caller)
+            && owner.IsAlive())
+        {
+            string kept = $"session {id} was resumed by {owner}, which is still running; left it running";
+            report(kept);
+            History($"stop {id}: asked for by the end of pid {caller.Pid}; {kept}");
+
+            return false;
+        }
+
         Dictionary<string, EntryKind> listed = await ListAsync(cancellationToken).ConfigureAwait(false);
-        bool present = ((string[])[id, id + ".session", id + ".session.tmp", id + ".log"]).Any(listed.ContainsKey)
+        bool present = ((string[])[id, .. SessionPaths.OwnFiles(id)]).Any(listed.ContainsKey)
             || (await host.ReadMountsAsync(cancellationToken).ConfigureAwait(false))(paths.MountPath(id)) is not null;
 
         if (!present)
@@ -186,14 +237,18 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
 
         // A file where a session's directory would be, and nothing else of one: not a session.
         if (listed.GetValueOrDefault(id) is EntryKind.File or EntryKind.Other
-            && !((string[])[id + ".session", id + ".session.tmp", id + ".log"]).Any(listed.ContainsKey))
+            && !SessionPaths.OwnFiles(id).Any(listed.ContainsKey))
         {
             report($"no session {id}; left {paths.MountPath(id)} in place: it is a file, not a session's directory");
 
             return false;
         }
 
-        await TearDownAsync(id, Recorded(id, listed), cancellationToken).ConfigureAwait(false);
+        SessionRecord? record = Recorded(id, listed);
+        History($"stop {id}: stopping"
+            + (record is null ? ", with no record of a server" : $" server pid {record.Pid}")
+            + (caller is null ? string.Empty : $", at the end of pid {caller.Pid}"));
+        await TearDownAsync(id, record, cancellationToken).ConfigureAwait(false);
         report($"stopped session {id}");
 
         return true;
@@ -240,6 +295,8 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
                 continue;
             }
 
+            History($"gc {id}: stopping: {why}");
+
             if (await TryTearDownAsync(id, record, cancellationToken).ConfigureAwait(false))
             {
                 report($"stopped session {id}: {why}");
@@ -255,6 +312,8 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
         // a server run by hand, or a directory left by a mount that is gone.
         foreach (string id in Unclaimed(await ListAsync(cancellationToken).ConfigureAwait(false)))
         {
+            History($"gc {id}: clearing up what no record claims");
+
             if (await TryTearDownAsync(id, null, cancellationToken).ConfigureAwait(false))
             {
                 cleared++;
@@ -290,6 +349,10 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
     /// </summary>
     private async Task TearDownAsync(string id, SessionRecord? record, CancellationToken cancellationToken)
     {
+        // A server that stopped on its own said why in its log, which goes below; one that is
+        // being stopped now has nothing to add.
+        bool stoppedOnItsOwn = record is null || !record.ServerIsAlive();
+
         if (record is not null)
         {
             if (record.ServerIsAlive())
@@ -306,6 +369,14 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
         string mountPath = paths.MountPath(id);
         Dictionary<string, EntryKind> listed = await ListAsync(cancellationToken).ConfigureAwait(false);
         EntryKind? kind = listed.TryGetValue(id, out EntryKind found) ? found : null;
+
+        // Only a plain file is opened: see Recorded for what opening anything else can do.
+        if (stoppedOnItsOwn
+            && listed.GetValueOrDefault(id + ".log") == EntryKind.File
+            && Tail(paths.LogPath(id)) is { Length: > 0 } tail)
+        {
+            History($"{id}: the end of its server's log:{tail}");
+        }
 
         if (kind == EntryKind.Link)
         {
@@ -335,7 +406,7 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
 
         // Unlinked, never opened, and never a directory: one where a record belongs is reported
         // by start rather than taken to be something this may delete.
-        foreach (string name in (string[])[id + ".session", id + ".session.tmp", id + ".log"])
+        foreach (string name in SessionPaths.OwnFiles(id))
         {
             if (listed.TryGetValue(name, out EntryKind fileKind) && fileKind != EntryKind.Directory)
             {
@@ -586,8 +657,9 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
         foreach ((string name, EntryKind kind) in listed)
         {
             string? id = kind is EntryKind.Directory or EntryKind.Link ? name
-                : name.EndsWith(".log", StringComparison.Ordinal) ? name[..^".log".Length]
-                : name.EndsWith(".session.tmp", StringComparison.Ordinal) ? name[..^".session.tmp".Length]
+                : ((string[])[".log", ".session.tmp", ".owner", ".owner.tmp"])
+                    .FirstOrDefault(ending => name.EndsWith(ending, StringComparison.Ordinal)) is { } ending
+                    ? name[..^ending.Length]
                 : null;
 
             if (id is not null && SessionPaths.IsValidId(id) && !listed.ContainsKey(id + ".session"))
@@ -661,6 +733,70 @@ internal sealed class Sessions(SessionPaths paths, ISessionHost host, Action<str
         OperatingSystem.IsWindows() ? unchecked((int)0x80070020)
         : OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD() ? 35
         : 11);
+
+    /// <summary>
+    /// Makes <paramref name="owner"/> the process whose end stops session <paramref name="id"/>,
+    /// and says so in the history when that is a change.
+    /// </summary>
+    private void Own(string id, SessionOwner? owner, string what)
+    {
+        if (owner is null)
+        {
+            return;
+        }
+
+        SessionOwner? before = SessionOwner.Read(paths.OwnerPath(id));
+
+        try
+        {
+            owner.Write(paths.OwnerPath(id));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // An unowned session is stopped by any end, as every session was before owners.
+            report($"session {id}: could not record which process it is for: {exception.Message}");
+
+            return;
+        }
+
+        if (before is null || !before.IsSameProcess(owner))
+        {
+            History($"start {id}: {what}, for {owner}" + (before is null ? string.Empty : $", taking it over from pid {before.Pid}"));
+        }
+    }
+
+    /// <summary>
+    /// Adds a line to the history, with the time and who asked. Only ever called with the lock
+    /// held, so lines never interleave; a history that cannot be written is reported and never
+    /// stops what it was recording.
+    /// </summary>
+    private void History(string line)
+    {
+        string path = paths.HistoryPath;
+
+        try
+        {
+            if (File.Exists(path) && new FileInfo(path).Length > HistoryLimit)
+            {
+                File.Move(path, path + ".1", overwrite: true);
+            }
+
+            var options = new FileStreamOptions { Mode = FileMode.Append, Access = FileAccess.Write };
+
+            if (!OperatingSystem.IsWindows())
+            {
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
+
+            using var writer = new StreamWriter(new FileStream(path, options));
+            writer.WriteLine(
+                $"{DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture)} {line} [by {Requester}]");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            report($"could not write {path}: {exception.Message}");
+        }
+    }
 
     /// <summary>
     /// The end of a session's log, for saying why it did not start. This program's own messages

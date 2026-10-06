@@ -59,6 +59,23 @@ internal sealed record SessionPaths(string Root)
     /// <summary>Everything the session's server printed.</summary>
     internal string LogPath(string id) => Path.Combine(Root, Checked(id) + ".log");
 
+    /// <summary>The agent process the session was last started or resumed for.</summary>
+    internal string OwnerPath(string id) => Path.Combine(Root, Checked(id) + ".owner");
+
+    /// <summary>
+    /// The files a session keeps beside its directory, every one removed with it. Temporary ones
+    /// included: they are what a write cut off half way leaves.
+    /// </summary>
+    internal static string[] OwnFiles(string id) =>
+        [id + ".session", id + ".session.tmp", id + ".log", id + ".owner", id + ".owner.tmp"];
+
+    /// <summary>
+    /// What every stop, collect and restart did, and who asked for it. It outlives the sessions
+    /// it is about, which is the point: a session's own log goes with it, so without this a tree
+    /// that vanished leaves nothing to say why. Starts with a dot, so it can never be a session.
+    /// </summary>
+    internal string HistoryPath => Path.Combine(Root, ".history");
+
     /// <summary>
     /// Held by whoever is starting, stopping or collecting sessions. A session id cannot start
     /// with a dot, so this can never be mistaken for one.
@@ -78,7 +95,7 @@ internal sealed record SessionPaths(string Root)
         && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.')
         && !ReservedEndings.Any(ending => id.EndsWith(ending, StringComparison.OrdinalIgnoreCase));
 
-    private static readonly string[] ReservedEndings = [".session", ".log", ".tmp"];
+    private static readonly string[] ReservedEndings = [".session", ".log", ".owner", ".tmp"];
 
     private static string Checked(string id) =>
         IsValidId(id) ? id : throw new ArgumentException($"'{id}' is not a session id", nameof(id));

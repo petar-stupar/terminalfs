@@ -56,7 +56,8 @@ internal sealed class SessionHost : ISessionHost
 
     /// <summary>
     /// Starts <c>terminalfs session stop --id <paramref name="id"/></c> in a session of its own,
-    /// and returns without waiting for it.
+    /// and returns without waiting for it. With <paramref name="owner"/>, the agent whose end this
+    /// is, it stops the session only if that agent owns it.
     /// </summary>
     /// <remarks>
     /// For a caller that is given less time than a stop takes: Claude Code cancels the hooks at
@@ -65,12 +66,13 @@ internal sealed class SessionHost : ISessionHost
     /// so the stop runs on after the caller is gone, out of reach of anything that kills the
     /// caller's process group.
     /// </remarks>
-    internal static void StopDetached(string id)
+    internal static void StopDetached(string id, SessionOwner? owner)
     {
         var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false, WorkingDirectory = "/" };
 
         foreach (string argument in (string[])
-            ["-c", "exec setsid \"$@\" </dev/null >/dev/null 2>&1", "terminalfs-stop", .. Self(), "session", "stop", "--id", id])
+            ["-c", "exec setsid \"$@\" </dev/null >/dev/null 2>&1", "terminalfs-stop", .. Self(), "session", "stop", "--id", id,
+                .. owner is null ? (string[])[] : ["--owner", owner.Argument()]])
         {
             start.ArgumentList.Add(argument);
         }
