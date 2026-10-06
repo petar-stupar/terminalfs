@@ -8,6 +8,26 @@ refuses a tag whose version has no section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A session's tree is no longer stopped by an agent process that has since been replaced.** An
+  editor that reloads its extension host resumes the Claude Code session in a new process while
+  the old one is still exiting, and the old one's session end named the same session id, so it
+  unmounted the tree the new process was working in, minutes later and with nothing to say why.
+  The session-start hooks now record the agent process a session was last started or resumed for,
+  and a session end from any other process leaves the tree running while that one is alive.
+  `session stop --owner <pid>:<start>` is what the hooks pass; a stop without it is unconditional,
+  as before.
+
+### Added
+
+- **A history of what happened to every session.** `<runtime-dir>/terminalfs/.history` records each
+  start, takeover, stop, refused stop and collect, with the time and the process chain that asked
+  for it, and keeps the end of a server's log when it is cleared up after stopping on its own. A
+  session's own log is removed with it, so until now a tree that vanished left no trace. It is
+  rotated to `.history.1` past 256 KiB.
+- **A session's server says which signal stopped it**, in its log.
+
 ## [0.5.0] — 2026-10-04
 
 ### Added

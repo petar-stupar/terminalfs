@@ -1,3 +1,5 @@
+using TerminalFs.Internal.Sessions;
+
 namespace TerminalFs.Tests;
 
 /// <summary>
@@ -80,6 +82,8 @@ public sealed class SessionOptionsTests
     [InlineData("stop", "--older-than", "5m")]
     [InlineData("stop", "--cwd", "/tmp")]
     [InlineData("gc", "--cwd", "/tmp")]
+    [InlineData("start", "--owner", "1234:1700000000000")]
+    [InlineData("gc", "--owner", "1234:1700000000000")]
     public void AFlagThatDoesNothingForTheActionIsRefused(string action, string flag, string value)
     {
         string[] args = action == "gc" ? [action, flag, value] : [action, "--id", "a", flag, value];
@@ -88,6 +92,23 @@ public sealed class SessionOptionsTests
 
         Assert.Contains(flag, refused.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void AStopCanBeLimitedToTheProcessThatOwnsTheSession()
+    {
+        SessionOwner? owner = SessionOptions.Parse(["stop", "--id", "a", "--owner", "1234:1700000000000"]).Owner;
+
+        Assert.Equal(new SessionOwner(1234, DateTimeOffset.FromUnixTimeMilliseconds(1700000000000)), owner);
+    }
+
+    [Theory]
+    [InlineData("1234")]
+    [InlineData("1:1700000000000")]
+    [InlineData("1234:")]
+    [InlineData("-5:1700000000000")]
+    [InlineData("1234:soon")]
+    public void AnOwnerThatIsNotAProcessIsRefused(string text) =>
+        Assert.Throws<CliUsageException>(() => SessionOptions.Parse(["stop", "--id", "a", "--owner", text]));
 
     [Fact]
     public void TheMainCommandLineHandsSessionOverRatherThanRefusingIt() =>
@@ -121,7 +142,7 @@ public sealed class SessionOptionsTests
                 .Distinct(StringComparer.Ordinal),
         ];
 
-        Assert.Equal(["--id", "--cwd", "--older-than", "--help"], documented);
+        Assert.Equal(["--id", "--cwd", "--owner", "--older-than", "--help"], documented);
 
         foreach (string flag in documented)
         {

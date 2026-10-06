@@ -175,7 +175,7 @@ internal static class Program
                 return 0;
 
             case SessionAction.Stop:
-                await sessions.StopAsync(id, CancellationToken.None).ConfigureAwait(false);
+                await sessions.StopAsync(id, options.Owner, CancellationToken.None).ConfigureAwait(false);
 
                 return 0;
 
@@ -264,7 +264,7 @@ internal static class Program
     }
 
     /// <summary>Starts session <paramref name="id"/>, or finds it started, and returns where its tree is.</summary>
-    private static async Task<string> StartSessionAsync(Sessions sessions, string id, string workingDirectory)
+    private static async Task<string> StartSessionAsync(Sessions sessions, string id, string workingDirectory, SessionOwner? owner = null)
     {
         // Both checked here as well as by the server, because here is where they can be said: a
         // hook sees what start prints, and nothing of what the server logs.
@@ -281,7 +281,7 @@ internal static class Program
                 + "defaults by running 'terminalfs --init-settings'.");
         }
 
-        return await sessions.StartAsync(id, workingDirectory, CancellationToken.None).ConfigureAwait(false);
+        return await sessions.StartAsync(id, workingDirectory, owner, CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -399,7 +399,7 @@ internal static class Program
             // Sessions only ever start on Linux, so elsewhere there is nothing to stop.
             if (OperatingSystem.IsLinux())
             {
-                SessionHost.StopDetached(input.SessionId);
+                SessionHost.StopDetached(input.SessionId, SessionOwner.OfCaller());
             }
 
             return 0;
@@ -417,7 +417,8 @@ internal static class Program
                 throw new MountException("sessions are Linux-only for now");
             }
 
-            string mountPath = await StartSessionAsync(sessions, input.SessionId, input.WorkingDirectory).ConfigureAwait(false);
+            string mountPath = await StartSessionAsync(sessions, input.SessionId, input.WorkingDirectory, SessionOwner.OfCaller())
+                .ConfigureAwait(false);
             mounted = mountPath;
 
             context = $"This session's terminalfs tree is mounted at {mountPath}. Wherever the terminalfs skill "
@@ -678,6 +679,10 @@ internal static class Program
             // Take responsibility for the signal: without this the runtime terminates the process
             // where it stands and the cleanup never runs.
             context.Cancel = true;
+
+            // Said, because a server that stopped is otherwise indistinguishable from one that
+            // was stopped, and the difference is the first thing anybody asks.
+            Console.Error.WriteLine($"terminalfs: {context.Signal} received; stopping");
             stopping.Cancel();
         }
     }

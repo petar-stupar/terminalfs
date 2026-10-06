@@ -37,6 +37,12 @@ internal sealed record SessionOptions
     /// </summary>
     internal TimeSpan? OlderThan { get; init; }
 
+    /// <summary>
+    /// For <c>stop</c>: the agent process whose end this is. The session is stopped only if that
+    /// process owns it, or its owner is no longer running.
+    /// </summary>
+    internal SessionOwner? Owner { get; init; }
+
     /// <summary>Print usage and stop.</summary>
     internal bool Help { get; init; }
 
@@ -95,6 +101,7 @@ internal sealed record SessionOptions
                 "--id" => options with { Id = Value() },
                 "--cwd" => options with { WorkingDirectory = Value() },
                 "--older-than" => options with { OlderThan = Duration(name, Value()) },
+                "--owner" => options with { Owner = ParseOwner(name, Value()) },
                 _ => throw new CliUsageException($"unknown option '{argument}'"),
             };
         }
@@ -111,6 +118,11 @@ internal sealed record SessionOptions
         if (OlderThan is not null && Action != SessionAction.Collect)
         {
             throw new CliUsageException($"session {action}: --older-than is for gc");
+        }
+
+        if (Owner is not null && Action != SessionAction.Stop)
+        {
+            throw new CliUsageException($"session {action}: --owner is for stop");
         }
 
         if (WorkingDirectory is not null && Action is not (SessionAction.Start or SessionAction.Serve))
@@ -135,11 +147,15 @@ internal sealed record SessionOptions
             throw new CliUsageException(
                 $"--id: '{Id}' is not a session id. It becomes a directory name beside the session's "
                 + $"record and log, so it is up to {SessionPaths.MaxIdLength} letters, digits, '_', '-' "
-                + "and '.', not starting with '.' and not ending in .session, .log or .tmp");
+                + "and '.', not starting with '.' and not ending in .session, .log, .owner or .tmp");
         }
 
         return this;
     }
+
+    private static SessionOwner ParseOwner(string name, string text) =>
+        SessionOwner.Parse(text)
+            ?? throw new CliUsageException($"{name}: '{text}' is not <pid>:<start in Unix milliseconds>");
 
     /// <summary>A number of seconds, or a number with <c>s</c>, <c>m</c>, <c>h</c> or <c>d</c>.</summary>
     private static TimeSpan Duration(string name, string text)
@@ -163,7 +179,7 @@ internal sealed record SessionOptions
     /// <summary>How to use the command.</summary>
     internal const string Usage = """
         usage: terminalfs session start --id <id> [--cwd <dir>]
-               terminalfs session stop --id <id>
+               terminalfs session stop --id <id> [--owner <pid>:<start>]
                terminalfs session gc [--older-than <duration>]
                terminalfs session serve --id <id> [--cwd <dir>]
 
@@ -179,11 +195,15 @@ internal sealed record SessionOptions
                       foreground, until it is stopped
 
           --id <id>                 the session: letters, digits, '_', '-' and '.', not
-                                    ending in .session, .log or .tmp
+                                    ending in .session, .log, .owner or .tmp
           --cwd <dir>               the directory the session's commands run in; this
                                     one by default
           --older-than <duration>   also stop sessions this old, and their commands, even
                                     with their server running: 90s, 30m, 12h, 7d
+          --owner <pid>:<start>     stop only if this agent process, started at <start>
+                                    in Unix milliseconds, is the one the session was last
+                                    started or resumed for, or that one has exited. What
+                                    the session-end hooks pass
           --help, -h                print this and stop
 
         Linux only for now. Mounting needs root, so start runs mount and umount through

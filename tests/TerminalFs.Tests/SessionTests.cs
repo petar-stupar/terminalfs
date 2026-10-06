@@ -236,7 +236,99 @@ public sealed class SessionTests : IDisposable
 
         Assert.True(Exited(running.Pid));
         Assert.Empty(host.Mounted);
-        Assert.Equal([paths.LockPath], Directory.EnumerateFileSystemEntries(root));
+        Assert.Equal([paths.HistoryPath, paths.LockPath], Directory.EnumerateFileSystemEntries(root).Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// A session's own log goes with it, so the history is the one thing left that says the tree
+    /// was stopped, and who by.
+    /// </summary>
+    [Fact]
+    public async Task AStopIsRecordedWithWhoAskedForIt()
+    {
+        Running("recorded");
+
+        await sessions.StopAsync("recorded", Token);
+
+        string history = await File.ReadAllTextAsync(paths.HistoryPath, Token);
+        Assert.Contains("stop recorded: stopping", history, StringComparison.Ordinal);
+        Assert.Contains($"[by {Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)} ", history, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A server that stopped on its own said why in its log, and the stop that clears it up
+    /// would otherwise delete the only copy.
+    /// </summary>
+    [Fact]
+    public async Task WhatAServerThatDiedSaidIsKeptWhenItsSessionIsCleared()
+    {
+        SessionRecord died = Running("died");
+        await File.WriteAllTextAsync(paths.LogPath("died"), "listening\nterminalfs: the server stopped on its own\n", Token);
+        Kill(died.Pid);
+
+        await sessions.StopAsync("died", Token);
+
+        Assert.Contains("terminalfs: the server stopped on its own", await File.ReadAllTextAsync(paths.HistoryPath, Token), StringComparison.Ordinal);
+        Assert.False(File.Exists(paths.LogPath("died")));
+    }
+
+    /// <summary>
+    /// An agent harness that restarts resumes the session in a new process while the old one is
+    /// still exiting, and the old one's end names the same session. That end must not take the
+    /// tree away from the process now using it.
+    /// </summary>
+    [Fact]
+    public async Task TheEndOfAProcessThatNoLongerOwnsTheSessionLeavesItRunning()
+    {
+        SessionRecord running = Running("resumed");
+        SessionOwner before = Agent();
+        SessionOwner after = Agent();
+        await sessions.StartAsync("resumed", root, before, Token);
+        await sessions.StartAsync("resumed", root, after, Token);
+
+        Assert.False(await sessions.StopAsync("resumed", before, Token));
+
+        Assert.True(Alive(running.Pid));
+        Assert.Contains(running.MountPath, host.Mounted.Keys);
+        Assert.Contains("left it running", await File.ReadAllTextAsync(paths.HistoryPath, Token), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheEndOfTheProcessThatOwnsTheSessionStopsIt()
+    {
+        SessionRecord running = Running("owned");
+        SessionOwner owner = Agent();
+        await sessions.StartAsync("owned", root, owner, Token);
+
+        Assert.True(await sessions.StopAsync("owned", owner, Token));
+
+        Assert.True(Exited(running.Pid));
+        Assert.False(File.Exists(paths.OwnerPath("owned")));
+    }
+
+    /// <summary>An owner that has gone will never end the session itself, so any end may.</summary>
+    [Fact]
+    public async Task ASessionWhoseOwnerHasExitedIsStoppedByAnyEnd()
+    {
+        SessionRecord running = Running("orphaned");
+        SessionOwner gone = Agent();
+        await sessions.StartAsync("orphaned", root, gone, Token);
+        Kill(gone.Pid);
+
+        Assert.True(await sessions.StopAsync("orphaned", Agent(), Token));
+
+        Assert.True(Exited(running.Pid));
+    }
+
+    [Fact]
+    public async Task AStopAskedForOutrightIgnoresTheOwner()
+    {
+        SessionRecord running = Running("outright");
+        await sessions.StartAsync("outright", root, Agent(), Token);
+
+        Assert.True(await sessions.StopAsync("outright", Token));
+
+        Assert.True(Exited(running.Pid));
     }
 
     [Fact]
@@ -680,6 +772,14 @@ public sealed class SessionTests : IDisposable
         host.Mounted[record.MountPath] = record.Port;
 
         return record;
+    }
+
+    /// <summary>A running process standing in for an agent.</summary>
+    private SessionOwner Agent()
+    {
+        Process agent = Start("sleep", "300");
+
+        return new SessionOwner(agent.Id, agent.StartTime.ToUniversalTime());
     }
 
     private SessionRecord Record(string id) =>
